@@ -24,24 +24,34 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 | Phase | Status | What actually exists |
 |---|---|---|
 | 1 — Environment setup | ❌ Not started | Node 20+ and PostgreSQL 18 are running. No Ubuntu/WSL2, Docker, or Fabric 2.5 binaries. **This blocks Phases 4–5.** |
-| 2 — Scaffold + ledger interface | ✅ **Done** | All five directories exist. `LedgerService` interface (8 methods), a working hash-chained `MockLedger`, and a `FabricLedger` stub behind the same interface. |
+| 2 — Scaffold + ledger interface | ✅ **Done** | Repo structure in place (two top-level folders — see below). `LedgerService` interface (8 methods), a working hash-chained `MockLedger`, and a `FabricLedger` stub behind the same interface. |
 | 3 — PostgreSQL | ✅ **Done** | Prisma schema, applied migration, and a seed script. Nine tables: Student, Course, Enrollment, FeeStatement, FeeItem, Payment, ResultSet, ResultRecord, Session. |
 | 4 — Fabric network | ❌ Not started | — |
-| 5 — Chaincode | ❌ Not started | `chaincode/` contains a spec README and no code. |
+| 5 — Chaincode | ❌ Not started | `backend/chaincode/` contains a spec README and no code. |
 | 6 — Backend + Zero Trust engine | 🟡 **Half done** | **Done:** bcrypt + JWT auth, DB-backed revocable sessions, and the full portal API (courses, enrolment, fees, results) — all working. **Missing:** the PDP risk engine, the PEP middleware, and TOTP MFA. Nothing is risk-scored yet. |
 | 7 — React portal | 🟡 **Mostly done** | Every page now reads live data from the API — no mock files remain. **Missing:** the admin/audit view, the Verify Integrity button, and per-request telemetry. |
-| 8 — Attack scenarios | ❌ Not started | `simulation/` contains a spec README and no code. |
-| 9 — Metrics & evaluation | ❌ Not started | `evaluation/` contains a spec README and no code. |
+| 8 — Attack scenarios | ❌ Not started | `backend/simulation/` contains a spec README and no code. |
+| 9 — Metrics & evaluation | ❌ Not started | `backend/evaluation/` contains a spec README and no code. |
 
 ## Repository structure
 
+Two top-level folders. (ROADMAP.md Phase 2 originally specified five — `chaincode`, `simulation`
+and `evaluation` were nested under `backend/` at the client's request. See the deviation note in
+[ROADMAP.md](ROADMAP.md).)
+
 ```
-backend/       Node.js + Express + TypeScript + Prisma. Auth, portal API, ledger client.
-frontend/      React + Vite + TypeScript + Tailwind student portal. Talks to the API.
-chaincode/     Hyperledger Fabric smart contracts (IdentityContract, AuditContract). [spec only]
-simulation/    The 5 scripted attack/usage scenarios.                                [spec only]
-evaluation/    Metrics engine: TAR/FAR/FRR, attack resistance, CES.                  [spec only]
+backend/
+├── src/           Express + TypeScript: auth, portal API, Zero Trust engine, ledger client
+├── prisma/        PostgreSQL schema, migrations, seed
+├── chaincode/     Hyperledger Fabric smart contracts (IdentityContract, AuditContract) [spec only]
+├── simulation/    The 5 scripted attack/usage scenarios                               [spec only]
+└── evaluation/    Metrics engine: TAR/FAR/FRR, attack resistance, CES                 [spec only]
+frontend/          React + Vite + TypeScript + Tailwind student portal. Talks to the API.
 ```
+
+`chaincode/` sits inside `backend/` for convenience, but it is **not** backend code — it is
+deployed to and executed by the Fabric peers, not the Express server, and keeps its own
+`package.json`.
 
 ## What has been built
 
@@ -164,16 +174,16 @@ npm run dev               # http://localhost:5173
 
 These three directories currently hold **specifications only** — no code.
 
-- **`chaincode/`** (Phase 5) — Node.js chaincode (`fabric-contract-api`). `IdentityContract`
+- **`backend/chaincode/`** (Phase 5) — Node.js chaincode (`fabric-contract-api`). `IdentityContract`
   (`registerIdentity`, `verifyIdentity`, `revokeIdentity`, `getIdentity`) and `AuditContract`
   (`logAccessEvent`, `getAuditEvent`, `getAuditTrail`, `verifyEventIntegrity`; append-only,
   hash-chained). The signatures deliberately mirror `LedgerService` so `FabricLedger` stays a
   thin wrapper.
-- **`simulation/`** (Phase 8) — the five required scenarios, each emitting labelled outcomes for
+- **`backend/simulation/`** (Phase 8) — the five required scenarios, each emitting labelled outcomes for
   the metrics engine: genuine login (→ ALLOW), invalid credentials (→ DENY), credential theft &
   imitation (→ STEP_UP then DENY), log tampering (→ integrity verifier flags the mismatch), and
   abnormal behaviour (→ mid-session TERMINATE).
-- **`evaluation/`** (Phase 9) — computes TAR / FRR / FAR, attack resistance %, mean anomaly
+- **`backend/evaluation/`** (Phase 9) — computes TAR / FRR / FAR, attack resistance %, mean anomaly
   detection time, session termination rate, audit integrity %, and the client's **Composite
   Effectiveness Score**:
   `CES = 0.4·AccessControl + 0.3·ContinuousValidation + 0.2·AuditIntegrity + 0.1·AuthenticationPerformance`.

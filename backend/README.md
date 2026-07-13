@@ -126,7 +126,15 @@ src/
 └── utils/
     ├── logger.ts             Minimal structured logger
     └── asyncHandler.ts       Async route wrapper (Express 4 does not catch rejections)
+
+chaincode/                    Fabric smart contracts (Phase 5) — spec only, own package.json.
+                              NOT backend code: it runs on the Fabric peers, not this server.
+simulation/                   The 5 attack scenarios (Phase 8) — spec only
+evaluation/                   Metrics + CES (Phase 9) — spec only
 ```
+
+> These three folders live under `backend/` at the client's request. ROADMAP.md Phase 2
+> originally placed them at the repo root; see the deviation note there.
 
 ## Next steps
 

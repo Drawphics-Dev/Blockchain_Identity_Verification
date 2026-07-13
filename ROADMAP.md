@@ -96,7 +96,7 @@ tampering is always caught.
 | Phase | Goal | Output |
 |---|---|---|
 | 1 — Environment setup | Install Node 20, PostgreSQL 16, Docker, Ubuntu 22.04 (VM/WSL2); pull Fabric 2.5 samples/binaries/images. | Verified toolchain. |
-| 2 — Project scaffold + ledger interface | Repo structure (backend, frontend, chaincode, simulation, evaluation). Define single `LedgerService` interface (registerIdentity, verifyIdentity, logAccessEvent, getAuditTrail, verifyEventIntegrity) so backend never depends on Fabric internals. | Stable skeleton. |
+| 2 — Project scaffold + ledger interface | Repo structure (see note below). Define single `LedgerService` interface (registerIdentity, verifyIdentity, logAccessEvent, getAuditTrail, verifyEventIntegrity) so backend never depends on Fabric internals. | Stable skeleton. |
 | 3 — PostgreSQL database | Schema: Student, Course, Enrollment, FeeStatement, Result, Session, RiskEvent, AuditMirror. Seed 20–50 students, courses, fees, results. | Populated DB. |
 | 4 — Hyperledger Fabric network | Fabric test-network: 2 orgs (University IT, Registrar), 1 channel, orderer, CA identities. One-command start script. | Running permissioned network. |
 | 5 — Smart contracts (chaincode) | IdentityContract (registerIdentity, verifyIdentity, revokeIdentity, getIdentity). AuditContract (logAccessEvent, getAuditEvent, getAuditTrail, verifyEventIntegrity; append-only, hash-chained). | Two deployed contracts. |
@@ -104,6 +104,22 @@ tampering is always caught.
 | 7 — React student portal | Login (+MFA), Dashboard (live trust/risk widget), Course Registration, Fee Statement, Results. Admin/Research view: audit-trail viewer, Verify Integrity button, live metrics. Per-request telemetry. | Demo-ready portal. |
 | 8 — Security scenarios + attack simulation | 5 scripted scenarios emitting labelled outcomes (see below). | Repeatable scenario runs. |
 | 9 — Metrics, evaluation, deployment | Compute all metric groups, export CSV/JSON + charts. Package for one-command start-up; prepare live showcase. | Final results + deployable system. |
+
+> **DEVIATION from the approved plan (repo structure).** Phase 2 above originally called for five
+> top-level folders: `backend`, `frontend`, `chaincode`, `simulation`, `evaluation`. At the
+> client's request the repo now has **two** top-level folders — `backend/` and `frontend/` — with
+> the other three nested inside the backend:
+>
+> ```
+> backend/chaincode/     Fabric smart contracts (Phase 5)
+> backend/simulation/    Attack scenarios      (Phase 8)
+> backend/evaluation/    Metrics + CES         (Phase 9)
+> frontend/
+> ```
+>
+> Nothing about the *content* of those phases changes — only where the files live. Worth knowing:
+> `chaincode/` is not backend code (it is deployed to and executed by the Fabric peers, not the
+> Express server), so it keeps its own `package.json` and is packaged from its own path.
 
 **Scenarios (Phase 8):**
 | # | Scenario | Expected behaviour | Feeds metric |
