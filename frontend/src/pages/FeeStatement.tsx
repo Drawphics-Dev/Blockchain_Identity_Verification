@@ -3,7 +3,9 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
 import { Badge } from '@/components/ui/Badge'
 import { ProgressBar } from '@/components/ui/ProgressBar'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { feeStatement } from '@/data/fees'
+import { ErrorState, Loading } from '@/components/ui/States'
+import { useResource } from '@/hooks/useResource'
+import { fetchFees } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -15,28 +17,53 @@ const CATEGORY_COLORS: Record<string, string> = {
 }
 
 export function FeeStatement() {
-  const { items, payments, totalDue, totalPaid, semester } = feeStatement
+  const fees = useResource(() => fetchFees().then((r) => r.statement))
+
+  // Header stays mounted across loading/error/content so the layout does not jump. Its text
+  // is fixed (the semester appears in the badge below) so it cannot reflow when data lands.
+  const header = (
+    <PageHeader
+      eyebrow="Finance"
+      title="Fee Statement"
+      description="Billing summary and payment history for the current semester."
+      action={
+        <div className="flex gap-2">
+          <button className="btn-accent btn-md">
+            <CreditCard className="h-4 w-4" /> Pay Now
+          </button>
+          <button className="btn-secondary btn-md">
+            <Download className="h-4 w-4" /> Statement
+          </button>
+        </div>
+      }
+    />
+  )
+
+  if (fees.loading) {
+    return (
+      <div>
+        {header}
+        <Loading label="Loading fee statement…" />
+      </div>
+    )
+  }
+  if (fees.error || !fees.data) {
+    return (
+      <div>
+        {header}
+        <ErrorState message={fees.error ?? 'No fee statement on record.'} onRetry={fees.reload} />
+      </div>
+    )
+  }
+
+  const { items, payments, totalDue, totalPaid, semester } = fees.data
   const balance = totalDue - totalPaid
-  const paidPct = Math.round((totalPaid / totalDue) * 100)
+  const paidPct = totalDue > 0 ? Math.round((totalPaid / totalDue) * 100) : 0
   const pieData = items.map((i) => ({ name: i.label, value: i.amount, category: i.category }))
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Finance"
-        title="Fee Statement"
-        description={`Billing summary and payment history for ${semester}.`}
-        action={
-          <div className="flex gap-2">
-            <button className="btn-accent btn-md">
-              <CreditCard className="h-4 w-4" /> Pay Now
-            </button>
-            <button className="btn-secondary btn-md">
-              <Download className="h-4 w-4" /> Statement
-            </button>
-          </div>
-        }
-      />
+      {header}
 
       {/* Balance + breakdown */}
       <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1.7fr_1fr]">
@@ -114,20 +141,24 @@ export function FeeStatement() {
               <ShieldCheck className="h-3.5 w-3.5" /> Tamper-proof
             </span>
           </div>
-          <ul className="space-y-3">
-            {payments.map((p) => (
-              <li key={p.id} className="flex items-center gap-3">
-                <CheckCircle2 className="h-5 w-5 flex-none text-emerald-600" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-navy-800">{p.method}</p>
-                  <p className="truncate text-xs text-navy-400">
-                    {formatDate(p.date)} · Ref {p.reference}
-                  </p>
-                </div>
-                <span className="text-sm font-semibold text-emerald-700 tabular-nums">+{formatCurrency(p.amount)}</span>
-              </li>
-            ))}
-          </ul>
+          {payments.length === 0 ? (
+            <p className="py-6 text-sm text-navy-400">No payments recorded yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {payments.map((p) => (
+                <li key={p.id} className="flex items-center gap-3">
+                  <CheckCircle2 className="h-5 w-5 flex-none text-emerald-600" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-navy-800">{p.method}</p>
+                    <p className="truncate text-xs text-navy-400">
+                      {formatDate(p.date)} · Ref {p.reference}
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold text-emerald-700 tabular-nums">+{formatCurrency(p.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="mt-4 flex items-center justify-between border-t border-navy-100 pt-4">
             <span className="text-sm font-medium text-navy-600">Total Paid</span>
             <span className="font-display text-base font-semibold text-emerald-700 tabular-nums">{formatCurrency(totalPaid)}</span>

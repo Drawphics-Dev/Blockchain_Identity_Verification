@@ -1,0 +1,167 @@
+// PostgreSQL schema — ROADMAP Phase 3.
+//
+// Shapes are aligned with the frontend's domain types (frontend/src/types/index.ts)
+// so the portal API can return them with minimal mapping.
+//
+// Not modelled yet (later phases): RiskEvent + AuditMirror arrive with the Zero Trust
+// engine (Phase 6) and the ledger (Phases 4–5).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 no longer accepts the connection URL here — it lives in prisma.config.ts
+// (for migrations) and is passed to the PrismaClient driver adapter at runtime.
+datasource db {
+  provider = "postgresql"
+}
+
+model Student {
+  id           String  @id @default(cuid())
+  /// The human-facing matriculation number, e.g. "SU/CS/2023/0187". Used to log in.
+  studentId    String  @unique
+  fullName     String
+  email        String  @unique
+  program      String
+  level        String
+  /// bcrypt hash. The raw password is never stored (ROADMAP §5).
+  passwordHash String
+
+  enrollments Enrollment[]
+  fees        FeeStatement[]
+  results     ResultSet[]
+  sessions    Session[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum CourseStatus {
+  open
+  waitlist
+  closed
+}
+
+model Course {
+  /// Course code is the natural key, e.g. "CSC 301".
+  code       String       @id
+  title      String
+  credits    Int
+  lecturer   String
+  schedule   String
+  /// Live count — incremented/decremented transactionally as students register and drop.
+  seatsTaken Int
+  seatsTotal Int
+  /// Authored status. The API downgrades it to `closed` when seatsTaken >= seatsTotal.
+  status     CourseStatus @default(open)
+  department String
+
+  enrollments Enrollment[]
+}
+
+model Enrollment {
+  id           String   @id @default(cuid())
+  studentId    String
+  courseCode   String
+  semester     String
+  registeredAt DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  course  Course  @relation(fields: [courseCode], references: [code], onDelete: Cascade)
+
+  /// A student cannot register the same course twice in one semester.
+  @@unique([studentId, courseCode, semester])
+  @@index([studentId])
+}
+
+model FeeStatement {
+  id        String @id @default(cuid())
+  studentId String
+  semester  String
+
+  student  Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  items    FeeItem[]
+  payments Payment[]
+
+  @@unique([studentId, semester])
+}
+
+enum FeeCategory {
+  tuition
+  accommodation
+  library
+  lab
+  other
+}
+
+model FeeItem {
+  id          String      @id @default(cuid())
+  statementId String
+  label       String
+  /// Whole currency units (no minor units in this dataset).
+  amount      Int
+  category    FeeCategory
+
+  statement FeeStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@index([statementId])
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  statementId String
+  paidAt      DateTime
+  method      String
+  amount      Int
+  reference   String   @unique
+
+  statement FeeStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+
+  @@index([statementId])
+}
+
+/// One semester's examination results (frontend: SemesterResult).
+model ResultSet {
+  id        String @id @default(cuid())
+  studentId String
+  semester  String
+  /// Semester GPA. The cumulative GPA is computed across all sets, not stored.
+  gpa       Float
+
+  student Student        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  records ResultRecord[]
+
+  @@unique([studentId, semester])
+}
+
+model ResultRecord {
+  id          String @id @default(cuid())
+  resultSetId String
+  courseCode  String
+  courseTitle String
+  credits     Int
+  score       Int
+  grade       String
+  gradePoint  Float
+
+  resultSet ResultSet @relation(fields: [resultSetId], references: [id], onDelete: Cascade)
+
+  @@index([resultSetId])
+}
+
+/// A login session. The JWT carries this row's id as its `jti`, so revoking the row
+/// (logout, or a future TERMINATE_SESSION decision) invalidates the token immediately —
+/// the Zero Trust requirement that a token alone is never sufficient.
+model Session {
+  id        String    @id @default(cuid())
+  studentId String
+  issuedAt  DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  ipAddress String?
+  userAgent String?
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+}

@@ -7,6 +7,13 @@
     color-scheme: light;
   }
 
+  html {
+    /* Always reserve the scrollbar's width. Without this, a short page (e.g. one that is
+       still loading) has no scrollbar and a long one does, so the content jumps sideways
+       by ~12px on every navigation. */
+    scrollbar-gutter: stable;
+  }
+
   * {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;

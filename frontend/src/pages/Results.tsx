@@ -3,7 +3,9 @@ import { Award, Download, ShieldCheck } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell } from 'recharts'
 import { Badge } from '@/components/ui/Badge'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { semesterResults } from '@/data/results'
+import { ErrorState, Loading } from '@/components/ui/States'
+import { useResource } from '@/hooks/useResource'
+import { fetchResults } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { Grade } from '@/types'
 
@@ -19,7 +21,42 @@ const scoreColor = (score: number) =>
 
 export function Results() {
   const [active, setActive] = useState(0)
-  const result = semesterResults[active]
+  const resource = useResource(() => fetchResults().then((r) => r.results))
+
+  // Keep the header mounted across loading/error/content so the layout does not jump.
+  const header = (
+    <PageHeader
+      eyebrow="Academic Record"
+      title="Examination Results"
+      description="Grades and GPA by semester. Every record is cryptographically verified and immutable."
+      action={
+        <button className="btn-secondary btn-md">
+          <Download className="h-4 w-4" /> Download Transcript
+        </button>
+      }
+    />
+  )
+
+  const semesterResults = resource.data ?? []
+
+  if (resource.loading || resource.error || semesterResults.length === 0) {
+    return (
+      <div>
+        {header}
+        {resource.loading ? (
+          <Loading label="Loading examination results…" />
+        ) : (
+          <ErrorState
+            message={resource.error ?? 'No examination results have been published yet.'}
+            onRetry={resource.error ? resource.reload : undefined}
+          />
+        )}
+      </div>
+    )
+  }
+
+  // Guard the index: a reload could return fewer semesters than the selected tab.
+  const result = semesterResults[Math.min(active, semesterResults.length - 1)]
 
   const chartData = result.records.map((r) => ({ name: r.courseCode, score: r.score }))
   const totalCredits = result.records.reduce((s, r) => s + r.credits, 0)
@@ -27,16 +64,7 @@ export function Results() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Academic Record"
-        title="Examination Results"
-        description="Grades and GPA by semester. Every record is cryptographically verified and immutable."
-        action={
-          <button className="btn-secondary btn-md">
-            <Download className="h-4 w-4" /> Download Transcript
-          </button>
-        }
-      />
+      {header}
 
       {/* Semester tabs */}
       <div className="mb-8 flex flex-wrap gap-2">

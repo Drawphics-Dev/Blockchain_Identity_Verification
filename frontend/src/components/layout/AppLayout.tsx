@@ -4,9 +4,11 @@ import { brand } from '@/config/brand'
 
 export function AppLayout() {
   return (
-    <div className="min-h-screen bg-canvas">
+    // Flex column with a flex-1 main: the footer stays pinned to the bottom even when a
+    // page is still loading, instead of flying up into the middle and back down.
+    <div className="flex min-h-screen flex-col bg-canvas">
       <Masthead />
-      <main className="mx-auto max-w-6xl px-5 py-8 lg:px-8 lg:py-10">
+      <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 lg:px-8 lg:py-10">
         <div className="animate-fade-in">
           <Outlet />
         </div>
