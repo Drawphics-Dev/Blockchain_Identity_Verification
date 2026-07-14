@@ -8,6 +8,7 @@ import { Dashboard } from '@/pages/Dashboard'
 import { CourseRegistration } from '@/pages/CourseRegistration'
 import { FeeStatement } from '@/pages/FeeStatement'
 import { Results } from '@/pages/Results'
+import { Admin } from '@/pages/Admin'
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
                 <Route path="/courses" element={<CourseRegistration />} />
                 <Route path="/fees" element={<FeeStatement />} />
                 <Route path="/results" element={<Results />} />
+                <Route path="/admin" element={<Admin />} />
               </Route>
             </Route>
 

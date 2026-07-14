@@ -11,6 +11,7 @@ const nav = [
   { to: '/courses', label: 'Course Registration' },
   { to: '/fees', label: 'Fee Statement' },
   { to: '/results', label: 'Examination Results' },
+  { to: '/admin', label: 'Research View' },
 ]
 
 export function Masthead() {

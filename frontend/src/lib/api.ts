@@ -4,7 +4,16 @@
  * One place that knows the base URL, attaches the bearer token, and turns non-2xx
  * responses into thrown `ApiError`s so callers can just `try`/`catch`.
  */
-import type { Course, Enrollment, FeeStatement, SemesterResult, Student } from '@/types'
+import type {
+  AuditEvent,
+  Course,
+  Enrollment,
+  EngineMetrics,
+  FeeStatement,
+  IntegrityResult,
+  SemesterResult,
+  Student,
+} from '@/types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000'
 const TOKEN_KEY = 'mu.token'
@@ -137,3 +146,15 @@ export const dropCourse = (courseCode: string) =>
 export const fetchFees = () => request<{ statement: FeeStatement }>('/api/fees')
 
 export const fetchResults = () => request<{ results: SemesterResult[] }>('/api/results')
+
+// ---- Admin / research ----
+
+export const fetchAuditTrail = (studentId?: string) =>
+  request<{ trail: AuditEvent[]; truncated: boolean; totalEvents: number }>(
+    `/api/admin/audit${studentId ? `?studentId=${encodeURIComponent(studentId)}` : ''}`,
+  )
+
+export const verifyAuditEvent = (eventId: string) =>
+  request<IntegrityResult>(`/api/admin/audit/verify/${encodeURIComponent(eventId)}`)
+
+export const fetchMetrics = () => request<EngineMetrics>('/api/admin/metrics')

@@ -72,13 +72,43 @@ export interface SemesterResult {
   records: ResultRecord[]
 }
 
-/** A single entry in the immutable (blockchain) audit trail shown in the portal. */
+export type Decision = 'ALLOW' | 'STEP_UP' | 'DENY' | 'TERMINATE'
+
+/** A single entry in the immutable (blockchain) audit trail — GET /api/admin/audit. */
 export interface AuditEvent {
-  id: string
-  timestamp: string
-  action: string
+  eventId: string
+  /** Internal id — use `student` for anything shown to a human. */
+  studentId: string
   resource: string
-  decision: 'ALLOW' | 'STEP_UP' | 'DENY' | 'TERMINATE'
+  decision: Decision
   riskScore: number
-  txHash: string
+  timestamp: string
+  hash: string
+  prevHash: string
+  /** null if the student row no longer exists (shouldn't normally happen). */
+  student: { studentId: string; fullName: string } | null
+}
+
+/** Result of GET /api/admin/audit/verify/:eventId. */
+export interface IntegrityResult {
+  eventId: string
+  valid: boolean
+  expectedHash: string
+  actualHash: string
+}
+
+/** GET /api/admin/metrics — see the endpoint's own comment for what's real vs. not yet
+ * computable (TAR/FAR/FRR/CES need the Phase 8 attack-simulation scenarios). */
+export interface EngineMetrics {
+  decisions: Record<Decision, number>
+  totalEvents: number
+  averageRiskScore: number
+  sessions: { total: number; active: number }
+  continuousValidation: {
+    sessionsWithAnomaly: number
+    terminatedAfterAnomaly: number
+    sessionTerminationRate: number | null
+    meanAnomalyDetectionSeconds: number | null
+  }
+  notYetAvailable: string[]
 }
