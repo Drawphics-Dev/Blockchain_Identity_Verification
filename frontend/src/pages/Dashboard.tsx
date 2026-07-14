@@ -176,7 +176,7 @@ export function Dashboard() {
     {
       label: 'Trust Score',
       value: `${student.trustScore}`,
-      note: 'placeholder — risk engine pending',
+      note: '100 − latest risk score',
       noteTone: 'muted',
       spark: [],
       color: '#0f766e',
@@ -281,18 +281,13 @@ export function Dashboard() {
           <ModuleHead title="Zero Trust Status" sub="Session confidence" />
           <div className="mt-4 flex flex-col items-center text-center">
             <TrustRing score={student.trustScore} />
-            {/*
-              Honest placeholder. The risk engine (PDP) that would compute this from live
-              device / IP / behaviour signals does not exist yet — ROADMAP Phase 6. Showing
-              fabricated "device trusted / no anomalies" checks here would misrepresent the
-              system, so we say what is actually true instead.
-            */}
             <div className="mt-5 w-full border-t border-navy-100 pt-4 text-left">
               <p className="flex items-start gap-2 text-[13px] leading-relaxed text-navy-500">
                 <Info className="mt-0.5 h-4 w-4 flex-none text-navy-300" />
                 <span>
-                  Continuous risk scoring is not active yet. This is a fixed placeholder until the
-                  Zero Trust policy engine is implemented.
+                  Scored continuously from live signals — device, network, time of day, request
+                  rate, and resource sensitivity. An unrecognized device or network can require
+                  step-up verification before sensitive pages load.
                 </span>
               </p>
             </div>

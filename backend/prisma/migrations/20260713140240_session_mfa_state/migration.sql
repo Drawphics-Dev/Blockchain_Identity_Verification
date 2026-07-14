@@ -1,0 +1,3 @@
+-- No-op: the schema changes originally applied under this migration name are captured
+-- in 20260713135042_zero_trust_engine's migration.sql (this local file was reconstructed
+-- after the original was lost; the database already reflects both).

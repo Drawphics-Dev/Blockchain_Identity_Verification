@@ -54,3 +54,27 @@ export interface IntegrityResult {
   expectedHash: string
   actualHash: string
 }
+
+/** Live signals the PDP scores on every login and every protected request (ROADMAP §4.1). */
+export interface RiskSignals {
+  /** Current device fingerprint differs from the one recorded for this context. */
+  newDevice: boolean
+  /** Current IP differs from the one recorded for this context. */
+  newIpAddress: boolean
+  /** Outside configured business hours (policy.config.ts). */
+  oddHour: boolean
+  /** Session age is past the configured fraction of its total lifetime. */
+  staleSession: boolean
+  /** More requests in the configured window than the configured limit. */
+  highRequestRate: boolean
+  /** The requested resource is one of the sensitive routes (fees, results). */
+  sensitiveResource: boolean
+}
+
+/** PDP output for one evaluation (a login, or one protected request). */
+export interface RiskEvaluation {
+  riskScore: number
+  decision: Decision
+  /** Which signals fired, in RiskSignals key form — the human-readable "why". */
+  reasons: (keyof RiskSignals)[]
+}

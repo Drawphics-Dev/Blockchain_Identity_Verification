@@ -18,6 +18,10 @@ const errorResponse = (description: string) => ({
   },
 })
 
+const zeroTrustBlocked = errorResponse(
+  '`step_up_required` — the PEP needs `POST /api/auth/step-up` first — or `access_denied`.',
+)
+
 export const openapiSpec = {
   openapi: '3.0.3',
   info: {
@@ -34,11 +38,29 @@ export const openapiSpec = {
       '**Session model.** The JWT is not a bearer token in the usual "stateless" sense: its `jti`',
       'is the id of a `Session` row in PostgreSQL, and every protected request re-checks that row.',
       'Logging out revokes the row, so the token dies immediately even though its signature is',
-      'still valid. This is what a future `TERMINATE_SESSION` decision from the Zero Trust engine',
-      'will use.',
+      'still valid — the same revocation path a `TERMINATE` decision from the Zero Trust engine uses.',
       '',
-      '**Not implemented yet:** risk scoring (PDP/PEP), TOTP step-up MFA, and the on-chain audit',
-      'trail. No request is risk-scored, and nothing is written to a ledger. See ROADMAP.md.',
+      '**Zero Trust engine.** Every `/api/*` portal request (and login itself) is scored by the',
+      'PDP against live signals — new device, new IP, odd hour, stale session, high request rate,',
+      'sensitive resource — and enforced by the PEP: `ALLOW` passes through, `STEP_UP` blocks with',
+      '`403 step_up_required` until `POST /api/auth/step-up` succeeds, `DENY` blocks the request,',
+      '`TERMINATE` revokes the session outright. A background monitor also re-scores active',
+      'sessions on an interval and can terminate one with no new request. See ROADMAP §4.',
+      '',
+      '**Identity anchor.** Login is a second, independent gate on top of the password: the',
+      'backend verifies (and anchors, on first use) an identity anchor on the ledger via',
+      '`LedgerService.verifyIdentity`. A revoked anchor blocks login with `403 identity_revoked`',
+      'even when the password is still correct — instant revocation that bcrypt alone can’t give.',
+      '',
+      '**Trying step-up:** `GET /api/auth/mfa-secret` (prototype-only convenience) returns the',
+      'signed-in student’s TOTP secret; feed it to any authenticator app or `otplib` to get a code.',
+      '',
+      '**Audit trail.** `GET /api/admin/audit` lists every decision written to the ledger;',
+      '`GET /api/admin/audit/verify/{eventId}` recomputes the off-chain mirror’s hash and compares',
+      'it to the immutable on-chain record — a mismatch means the PostgreSQL copy was tampered with.',
+      '',
+      '**Not implemented yet:** the real Fabric ledger (the engine currently writes through',
+      '`LedgerService` to `MockLedger`) and the frontend admin/research view. See ROADMAP.md.',
     ].join('\n'),
   },
   servers: [{ url: 'http://localhost:3000', description: 'Local development' }],
@@ -50,6 +72,10 @@ export const openapiSpec = {
       description:
         'Courses, registration, fees and results. Every route requires a bearer token and is ' +
         'scoped to the student in that token — you cannot read another student’s records.',
+    },
+    {
+      name: 'Admin',
+      description: 'Audit trail and tamper-detection (ROADMAP §5). Requires a bearer token.',
     },
   ],
   components: {
@@ -82,8 +108,8 @@ export const openapiSpec = {
         type: 'object',
         description:
           '`gpa` and `enrolledCredits` are derived from the underlying rows on every read, ' +
-          'never stored, so they cannot drift. `trustScore` is a fixed placeholder until the ' +
-          'Zero Trust risk engine exists.',
+          'never stored, so they cannot drift. `trustScore` is derived too, from the Zero ' +
+          'Trust engine’s most recent decision for this student.',
         properties: {
           id: { type: 'string', example: 'cmrj19d8n0000vgtltacdtune' },
           studentId: { type: 'string', example: 'SU/CS/2023/0187' },
@@ -100,7 +126,7 @@ export const openapiSpec = {
           enrolledCredits: { type: 'integer', example: 15 },
           trustScore: {
             type: 'integer',
-            description: 'PLACEHOLDER — always 94 until the PDP is implemented (Phase 6).',
+            description: '100 minus the risk score of the student’s most recent PDP decision.',
             example: 94,
           },
         },
@@ -256,7 +282,10 @@ export const openapiSpec = {
         },
         responses: {
           200: {
-            description: 'Authenticated.',
+            description:
+              'Authenticated. `stepUpRequired` is true when the Zero Trust engine flagged this ' +
+              'device/network as unrecognized — portal routes 403 with `step_up_required` until ' +
+              '`POST /api/auth/step-up` succeeds.',
             content: {
               'application/json': {
                 schema: {
@@ -265,6 +294,7 @@ export const openapiSpec = {
                     token: { type: 'string', description: 'JWT — paste into **Authorize**.' },
                     expiresAt: { type: 'string', format: 'date-time' },
                     student: { $ref: '#/components/schemas/Student' },
+                    stepUpRequired: { type: 'boolean' },
                   },
                 },
               },
@@ -272,6 +302,73 @@ export const openapiSpec = {
           },
           400: errorResponse('Missing student ID or password.'),
           401: errorResponse('Wrong password, or no such student — deliberately indistinguishable.'),
+          403: errorResponse('`identity_revoked` — the ledger identity anchor has been revoked.'),
+        },
+      },
+    },
+
+    '/api/auth/step-up': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Complete a STEP_UP challenge with a TOTP code',
+        description:
+          'Verifies the code against the signed-in student’s TOTP secret. On success the ' +
+          'session is marked verified for a limited window, during which the PEP downgrades ' +
+          'matching `STEP_UP` decisions to `ALLOW`.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['code'],
+                properties: { code: { type: 'string', example: '123456' } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Verified.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean', example: true },
+                    validUntil: { type: 'string', format: 'date-time' },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse('Missing/malformed code.'),
+          401: errorResponse('`invalid_code` — incorrect or expired TOTP code; or no valid session.'),
+        },
+      },
+    },
+
+    '/api/auth/mfa-secret': {
+      get: {
+        tags: ['Auth'],
+        summary: 'This student’s TOTP secret (prototype/demo convenience)',
+        description:
+          'Returns the signed-in student’s own TOTP secret and otpauth:// URI, so it can be fed ' +
+          'to an authenticator app (or `otplib` directly) to compute a step-up code. A real ' +
+          'deployment would gate this behind an enrollment flow instead of exposing it on demand.',
+        responses: {
+          200: {
+            description: 'The TOTP secret.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { secret: { type: 'string' }, otpauthUrl: { type: 'string' } },
+                },
+              },
+            },
+          },
+          401: errorResponse('No valid session.'),
         },
       },
     },
@@ -337,6 +434,7 @@ export const openapiSpec = {
             },
           },
           401: errorResponse('No valid session.'),
+          403: zeroTrustBlocked,
         },
       },
     },
@@ -363,6 +461,7 @@ export const openapiSpec = {
             },
           },
           401: errorResponse('No valid session.'),
+          403: zeroTrustBlocked,
         },
       },
       post: {
@@ -395,6 +494,7 @@ export const openapiSpec = {
           },
           400: errorResponse('`courseCode` missing.'),
           401: errorResponse('No valid session.'),
+          403: zeroTrustBlocked,
           404: errorResponse('`course_not_found` — no such course code.'),
           409: errorResponse(
             'Rejected: `already_registered`, `course_full`, or `credit_limit_exceeded`.',
@@ -428,6 +528,7 @@ export const openapiSpec = {
             },
           },
           401: errorResponse('No valid session.'),
+          403: zeroTrustBlocked,
           404: errorResponse('`not_registered` — you are not registered for this course.'),
         },
       },
@@ -438,8 +539,8 @@ export const openapiSpec = {
         tags: ['Portal'],
         summary: 'Fee statement (sensitive)',
         description:
-          'A *sensitive* resource: once the Zero Trust engine exists, requesting this will carry ' +
-          'extra weight in the risk score and can trigger a STEP_UP decision.',
+          'A *sensitive* resource: requesting this carries extra weight in the risk score ' +
+          '(policy.config.ts) and, combined with other signals, can trigger a STEP_UP decision.',
         responses: {
           200: {
             description: 'The student’s fee statement.',
@@ -453,6 +554,7 @@ export const openapiSpec = {
             },
           },
           401: errorResponse('No valid session.'),
+          403: zeroTrustBlocked,
           404: errorResponse('No fee statement on record.'),
         },
       },
@@ -481,6 +583,94 @@ export const openapiSpec = {
             },
           },
           401: errorResponse('No valid session.'),
+          403: zeroTrustBlocked,
+        },
+      },
+    },
+
+    '/api/admin/audit': {
+      get: {
+        tags: ['Admin'],
+        summary: 'The immutable audit trail',
+        description: 'Every decision the Zero Trust engine has written to the ledger, newest write order.',
+        parameters: [
+          {
+            name: 'studentId',
+            in: 'query',
+            required: false,
+            schema: { type: 'string' },
+            description: 'Scope the trail to one student (the internal id, not the matriculation number).',
+          },
+        ],
+        responses: {
+          200: {
+            description: 'The trail.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    trail: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          eventId: { type: 'string' },
+                          studentId: { type: 'string' },
+                          resource: { type: 'string' },
+                          decision: { type: 'string', enum: ['ALLOW', 'STEP_UP', 'DENY', 'TERMINATE'] },
+                          riskScore: { type: 'integer' },
+                          timestamp: { type: 'string', format: 'date-time' },
+                          hash: { type: 'string' },
+                          prevHash: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: errorResponse('No valid session.'),
+        },
+      },
+    },
+
+    '/api/admin/audit/verify/{eventId}': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Tamper check for one audit event',
+        description:
+          'Recomputes the hash the off-chain (PostgreSQL) mirror’s CURRENT fields would produce ' +
+          'and compares it to the immutable on-chain hash. `valid: false` means the mirror row ' +
+          'was edited after the fact — the Phase 8 tampering scenario’s expected detection path.',
+        parameters: [
+          {
+            name: 'eventId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'The integrity result.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    eventId: { type: 'string' },
+                    valid: { type: 'boolean' },
+                    expectedHash: { type: 'string', description: 'The immutable on-chain hash.' },
+                    actualHash: { type: 'string', description: 'Recomputed from the mirror’s current data.' },
+                  },
+                },
+              },
+            },
+          },
+          401: errorResponse('No valid session.'),
+          404: errorResponse('No audit event with that id, on-chain or in the mirror.'),
         },
       },
     },

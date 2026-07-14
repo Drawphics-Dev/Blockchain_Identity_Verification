@@ -41,7 +41,7 @@ export function createApp() {
   )
 
   app.use('/api/auth', authRouter)
-  app.use('/api/admin', auditRouter) // placeholder — audit trail lands with the ledger phase
+  app.use('/api/admin', auditRouter)
   app.use('/api', portalRouter)
 
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }))

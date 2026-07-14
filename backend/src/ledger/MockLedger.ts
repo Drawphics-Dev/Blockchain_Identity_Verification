@@ -11,29 +11,15 @@
  *     record breaks its own hash and every hash after it — exactly what makes the
  *     audit-integrity / tamper-detection metric work (ROADMAP §5).
  */
-import { createHash } from 'node:crypto'
 import type {
   AccessEvent,
   AuditRecord,
   IdentityAnchor,
 } from '../types'
 import type { LedgerService } from './LedgerService'
+import { hashEvent } from './hashEvent'
 
 const GENESIS_HASH = '0'.repeat(64)
-
-/** SHA-256 hex digest of the event payload chained to the previous record's hash. */
-function hashEvent(event: AccessEvent, prevHash: string): string {
-  const payload = [
-    event.eventId,
-    event.studentId,
-    event.resource,
-    event.decision,
-    String(event.riskScore),
-    event.timestamp,
-    prevHash,
-  ].join('|')
-  return createHash('sha256').update(payload).digest('hex')
-}
 
 export class MockLedger implements LedgerService {
   readonly kind = 'mock' as const

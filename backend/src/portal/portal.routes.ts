@@ -1,15 +1,17 @@
 /**
  * Portal API — courses, registration, fees, results.
  *
- * Every route is behind `requireAuth`, and every route scopes its query to the student in
- * the token: a student can only ever read their own fees and results. When the Zero Trust
- * PEP lands (Phase 6) it mounts here alongside `requireAuth`, and `fees`/`results` become
- * the sensitive resources that raise the risk score.
+ * Every route is behind `requireAuth` then `pep`, and every route scopes its query to the
+ * student in the token: a student can only ever read their own fees and results. `pep`
+ * is the Zero Trust PEP (ROADMAP §4.3, Phase 6) — it risk-scores every request here and
+ * can block it before the handler ever runs; `fees`/`results` are the sensitive resources
+ * that raise the risk score (policy.config.ts).
  */
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth } from '../auth/requireAuth'
 import { asyncHandler } from '../utils/asyncHandler'
+import { pep } from '../zerotrust/pep.middleware'
 import {
   EnrollmentError,
   drop,
@@ -23,6 +25,7 @@ import {
 export const portalRouter = Router()
 
 portalRouter.use(requireAuth)
+portalRouter.use(asyncHandler(pep))
 
 portalRouter.get(
   '/courses',

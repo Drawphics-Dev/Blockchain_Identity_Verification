@@ -14,13 +14,18 @@ export const CURRENT_SEMESTER = 'Semester 1'
 export const MAX_CREDITS = 24
 
 /**
- * Placeholder session confidence.
- *
- * TODO(Phase 6): the Zero Trust PDP computes this from live signals (device, IP, time,
- * behaviour). Until the risk engine exists there is nothing to derive it from, so it is a
- * constant — and deliberately NOT stored in the database, to avoid it looking like real data.
+ * The student's current Zero Trust confidence: 100 minus the risk score of their most
+ * recent PDP decision (login or protected request). A student with no risk history yet
+ * (fresh seed data, never logged in) reads as fully trusted, matching the engine's own
+ * default — a request with no signals firing scores 0 risk.
  */
-export const PLACEHOLDER_TRUST_SCORE = 94
+async function currentTrustScore(studentId: string): Promise<number> {
+  const latest = await prisma.riskEvent.findFirst({
+    where: { studentId },
+    orderBy: { createdAt: 'desc' },
+  })
+  return latest ? Math.max(0, 100 - latest.riskScore) : 100
+}
 
 /** Credit-weighted GPA across every graded semester. */
 function cumulativeGpa(
@@ -53,7 +58,7 @@ export async function getStudentProfile(studentId: string) {
     level: student.level,
     gpa: cumulativeGpa(student.results),
     enrolledCredits: student.enrollments.reduce((sum, e) => sum + e.course.credits, 0),
-    trustScore: PLACEHOLDER_TRUST_SCORE,
+    trustScore: await currentTrustScore(student.id),
   }
 }
 
