@@ -14,7 +14,21 @@ interface AuthState {
   student: Student | null
   isAuthenticated: boolean
   loading: boolean
-  login: (studentId: string, password: string) => Promise<{ ok: boolean; message?: string }>
+  /** Phase 1 of login: password only. `stepUpRequired: true` means the engine flagged this
+   * device/network — the caller must collect a TOTP code and call `completeStepUp` before
+   * the student is actually considered signed in (see ROADMAP Phase 7: "Login (+MFA)"). */
+  login: (
+    studentId: string,
+    password: string,
+  ) => Promise<{ ok: true; stepUpRequired: boolean } | { ok: false; message: string }>
+  /**
+   * Phase 2 of login: call once the MFA challenge has been satisfied server-side (MfaChallenge
+   * owns that call, since enrolling and verifying hit different endpoints). This promotes the
+   * pending student to signed-in.
+   */
+  confirmMfaVerified: () => void
+  /** Abandon a login that got as far as `stepUpRequired` but never satisfied the challenge. */
+  cancelPendingLogin: () => void
   logout: () => Promise<void>
   /** Re-read the student from the backend — GPA and credit load change as courses are registered. */
   refresh: () => Promise<void>
@@ -25,6 +39,9 @@ const AuthContext = createContext<AuthState | undefined>(undefined)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [student, setStudent] = useState<Student | null>(null)
   const [loading, setLoading] = useState(true)
+  // Holds the student between "password verified" and "step-up verified" — not exposed as
+  // `student`/`isAuthenticated` yet, so ProtectedRoute won't admit a half-finished login.
+  const [pendingStudent, setPendingStudent] = useState<Student | null>(null)
 
   // Restore the session on load. A stored token is only trustworthy if the backend still
   // accepts it — so we ask, rather than assume.
@@ -51,10 +68,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login: AuthState['login'] = async (studentId, password) => {
     try {
-      const { token, student } = await api.login(studentId, password)
+      const { token, student, stepUpRequired } = await api.login(studentId, password)
       api.setToken(token)
-      setStudent(student)
-      return { ok: true }
+      if (stepUpRequired) {
+        setPendingStudent(student)
+      } else {
+        setStudent(student)
+      }
+      return { ok: true, stepUpRequired }
     } catch (err) {
       const message =
         err instanceof api.ApiError
@@ -63,6 +84,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { ok: false, message }
     }
   }
+
+  const confirmMfaVerified = useCallback(() => {
+    setStudent((current) => current ?? pendingStudent)
+    setPendingStudent(null)
+  }, [pendingStudent])
+
+  const cancelPendingLogin = useCallback(() => {
+    api.clearToken()
+    setPendingStudent(null)
+  }, [])
 
   const logout = useCallback(async () => {
     // Revoke server-side first, so the token is dead even if a copy of it survives.
@@ -81,8 +112,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<AuthState>(
-    () => ({ student, isAuthenticated: !!student, loading, login, logout, refresh }),
-    [student, loading, logout, refresh],
+    () => ({
+      student,
+      isAuthenticated: !!student,
+      loading,
+      login,
+      confirmMfaVerified,
+      cancelPendingLogin,
+      logout,
+      refresh,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [student, pendingStudent, loading, confirmMfaVerified, cancelPendingLogin, logout, refresh],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

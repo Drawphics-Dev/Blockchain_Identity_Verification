@@ -14,10 +14,23 @@ import {
 import { brand } from '@/config/brand'
 import { useAuth } from '@/context/AuthContext'
 import { Crest } from '@/components/ui/Crest'
+import { MfaChallenge } from '@/components/MfaChallenge'
 
+/**
+ * Two-step sign-in (ROADMAP Phase 7: "Login (+MFA)"): credentials, then — only when the Zero
+ * Trust engine flags this device/network — an MFA challenge, resolved BEFORE the student is
+ * navigated anywhere. That ordering is what keeps the reactive mid-session dialog
+ * (StepUpContext) from ever firing on a fresh login: by the time /dashboard mounts, the
+ * challenge is already settled.
+ *
+ * The challenge itself (enroll-with-QR vs. enter-a-code) is MfaChallenge's business, not this
+ * page's — a first-time student and a returning one land in the same place here.
+ */
 export function Login() {
-  const { login } = useAuth()
+  const { login, confirmMfaVerified, cancelPendingLogin } = useAuth()
   const navigate = useNavigate()
+
+  const [step, setStep] = useState<'credentials' | 'mfa'>('credentials')
 
   const [studentId, setStudentId] = useState('SU/CS/2023/0187')
   const [password, setPassword] = useState('')
@@ -25,14 +38,29 @@ export function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleCredentialsSubmit(e: FormEvent) {
     e.preventDefault()
     setError('')
     setLoading(true)
     const res = await login(studentId, password)
     setLoading(false)
-    if (res.ok) navigate('/dashboard')
-    else setError(res.message ?? 'Unable to sign in.')
+    if (!res.ok) {
+      setError(res.message)
+      return
+    }
+    if (res.stepUpRequired) setStep('mfa')
+    else navigate('/dashboard')
+  }
+
+  function handleMfaVerified() {
+    confirmMfaVerified()
+    navigate('/dashboard')
+  }
+
+  function handleBack() {
+    cancelPendingLogin()
+    setStep('credentials')
+    setPassword('')
   }
 
   return (
@@ -82,91 +110,106 @@ export function Login() {
 
           {/* Right — sign-in form */}
           <div className="lg:border-l lg:border-navy-100 lg:pl-14">
-            {/* Mobile brand + statement */}
-            <div className="mb-8 lg:hidden">
-              <p className="eyebrow">Student Portal</p>
-              <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight text-navy-900">
-                Sign in
-              </h1>
-              <p className="mt-1 text-sm text-navy-400">Use your university student credentials.</p>
-            </div>
-
-            <div className="hidden lg:block">
-              <h2 className="font-display text-2xl font-semibold text-navy-900">Sign in</h2>
-              <p className="mt-1 text-sm text-navy-400">Use your university student credentials.</p>
-            </div>
-
-            <form onSubmit={handleSubmit} className="mt-8 space-y-5">
-              <div>
-                <label className="mb-1.5 block text-sm font-semibold text-navy-700">
-                  Student ID
-                </label>
-                <div className="relative">
-                  <Fingerprint className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
-                  <input
-                    className="input pl-10"
-                    value={studentId}
-                    onChange={(e) => setStudentId(e.target.value)}
-                    placeholder="SU/CS/2023/0187"
-                    autoComplete="username"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label className="text-sm font-semibold text-navy-700">Password</label>
-                  <a href="#" className="text-xs font-semibold text-navy-500 hover:text-gold-600">
-                    Forgot password?
-                  </a>
-                </div>
-                <div className="relative">
-                  <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
-                  <input
-                    className="input pl-10 pr-10"
-                    type={showPass ? 'text' : 'password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    autoComplete="current-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPass((s) => !s)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-navy-300 hover:text-navy-600"
-                  >
-                    {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <div className="flex items-center gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-700">
-                  <AlertCircle className="h-4 w-4 flex-none" />
-                  {error}
-                </div>
-              )}
-
-              <button type="submit" className="btn-primary btn-lg w-full" disabled={loading}>
-                {loading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Verifying identity…
-                  </>
-                ) : (
-                  <>
+            {step === 'credentials' ? (
+              <>
+                {/* Mobile brand + statement */}
+                <div className="mb-8 lg:hidden">
+                  <p className="eyebrow">Student Portal</p>
+                  <h1 className="mt-2 font-display text-3xl font-semibold tracking-tight text-navy-900">
                     Sign in
-                    <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </button>
-            </form>
+                  </h1>
+                  <p className="mt-1 text-sm text-navy-400">Use your university student credentials.</p>
+                </div>
 
-            <p className="mt-8 border-t border-navy-100 pt-5 text-[13px] text-navy-400">
-              <span className="font-semibold text-navy-600">Demonstration access</span> — ID{' '}
-              <span className="font-mono text-navy-700">SU/CS/2023/0187</span>, password{' '}
-              <span className="font-mono text-navy-700">demo1234</span>
-            </p>
+                <div className="hidden lg:block">
+                  <h2 className="font-display text-2xl font-semibold text-navy-900">Sign in</h2>
+                  <p className="mt-1 text-sm text-navy-400">Use your university student credentials.</p>
+                </div>
+
+                <form onSubmit={handleCredentialsSubmit} className="mt-8 space-y-5">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-semibold text-navy-700">
+                      Student ID
+                    </label>
+                    <div className="relative">
+                      <Fingerprint className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
+                      <input
+                        className="input pl-10"
+                        value={studentId}
+                        onChange={(e) => setStudentId(e.target.value)}
+                        placeholder="SU/CS/2023/0187"
+                        autoComplete="username"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <label className="text-sm font-semibold text-navy-700">Password</label>
+                      <a href="#" className="text-xs font-semibold text-navy-500 hover:text-gold-600">
+                        Forgot password?
+                      </a>
+                    </div>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-navy-300" />
+                      <input
+                        className="input pl-10 pr-10"
+                        type={showPass ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        autoComplete="current-password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPass((s) => !s)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-navy-300 hover:text-navy-600"
+                      >
+                        {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {error && (
+                    <div className="flex items-center gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-700">
+                      <AlertCircle className="h-4 w-4 flex-none" />
+                      {error}
+                    </div>
+                  )}
+
+                  <button type="submit" className="btn-primary btn-lg w-full" disabled={loading}>
+                    {loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Verifying identity…
+                      </>
+                    ) : (
+                      <>
+                        Sign in
+                        <ArrowRight className="h-4 w-4" />
+                      </>
+                    )}
+                  </button>
+                </form>
+
+                <p className="mt-8 border-t border-navy-100 pt-5 text-[13px] text-navy-400">
+                  <span className="font-semibold text-navy-600">Demonstration access</span> — ID{' '}
+                  <span className="font-mono text-navy-700">SU/CS/2023/0187</span>, password{' '}
+                  <span className="font-mono text-navy-700">demo1234</span>
+                </p>
+              </>
+            ) : (
+              <>
+                <MfaChallenge studentId={studentId} onVerified={handleMfaVerified} />
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="mt-5 w-full text-center text-[13px] font-semibold text-navy-500 hover:text-navy-800"
+                >
+                  Back to sign in
+                </button>
+              </>
+            )}
           </div>
         </div>
       </main>

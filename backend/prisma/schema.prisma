@@ -22,9 +22,23 @@ model Student {
   program      String
   level        String
   /// bcrypt hash. The raw password is never stored (ROADMAP §5).
-  passwordHash String
-  /// TOTP base32 secret for step-up MFA, provisioned at seed/registration time.
-  totpSecret   String
+  passwordHash  String
+  /// TOTP base32 secret, issued with the account. Never leaves the server after enrollment.
+  totpSecret    String
+  /// When the student bound this secret to an authenticator app by proving a code from it.
+  /// Until then the secret is issued but unusable, and the enrollment QR may still be shown.
+  /// Once set, the secret is never disclosed again — the QR is a one-time reveal.
+  mfaEnrolledAt DateTime?
+  /// One-time enrollment token, issued by the registrar with the account and delivered
+  /// OUT OF BAND (in person / to a verified address) — deliberately NOT down the same channel
+  /// as the password.
+  ///
+  /// It is what stops a password thief from enrolling their own authenticator before the real
+  /// student ever does. Without it, whoever logs in first binds the second factor, so a stolen
+  /// password alone would defeat MFA entirely on any not-yet-enrolled account.
+  ///
+  /// Cleared the moment it is used, so it is good for exactly one enrollment.
+  enrollmentToken String? @unique
 
   enrollments  Enrollment[]
   fees         FeeStatement[]
@@ -273,4 +287,54 @@ model KnownNetwork {
 
   @@unique([studentId, ipAddress])
   @@index([studentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LEDGER (stand-in for Hyperledger Fabric — ROADMAP Phases 4–5)
+//
+// These two tables are what `MockLedger` writes to. They are NOT ordinary application
+// tables and nothing outside `src/ledger/` may touch them: they stand in for on-chain
+// state until the real Fabric network exists, and `FabricLedger` will replace them behind
+// the identical `LedgerService` interface without any caller changing.
+//
+// They live in PostgreSQL only because a prototype has nowhere else to put them. The
+// guarantees they imitate are enforced in code (src/ledger/MockLedger.ts): append-only —
+// there is no update or delete path — and hash-chained, so altering any record breaks its
+// own hash and every hash after it.
+//
+// Why they exist at all: the previous MockLedger held the chain in a JS array, so every
+// process restart silently erased the entire "immutable audit trail" and every identity
+// anchor. An audit trail that evaporates on restart cannot demonstrate the property this
+// project is about.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// On-chain identity anchor (IdentityContract). Never holds a raw credential — only a
+/// hash and a public key (ROADMAP §5).
+model LedgerIdentity {
+  /// The matriculation number, e.g. "SU/CS/2023/0187" — the ledger's own key space, which
+  /// is deliberately independent of PostgreSQL's internal Student.id.
+  studentId      String   @id
+  credentialHash String
+  publicKey      String
+  revoked        Boolean  @default(false)
+  registeredAt   DateTime @default(now())
+}
+
+/// One append-only, hash-chained audit record (AuditContract).
+model LedgerAuditRecord {
+  eventId   String   @id
+  /// Chain order. `prevHash` refers to the record with the preceding seq, so the chain has
+  /// one unambiguous order even under concurrent writes.
+  seq       Int      @unique @default(autoincrement())
+  studentId String
+  resource  String
+  decision  String
+  riskScore Int
+  timestamp DateTime
+  /// SHA-256 over this record's payload + prevHash — the tamper fingerprint.
+  hash      String
+  prevHash  String
+
+  @@index([studentId])
+  @@index([seq])
 }

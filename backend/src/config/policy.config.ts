@@ -8,8 +8,25 @@
  */
 import type { RiskSignals } from '../types'
 
+/**
+ * Weight calibration is a security decision, not an arbitrary tuning knob — the numbers
+ * here only mean something relative to `thresholds` below. The load-bearing constraint:
+ *
+ *   newDevice must ON ITS OWN reach the STEP_UP threshold.
+ *
+ * An unrecognized device is the primary credential-compromise signal (ROADMAP §1: the
+ * stolen-password threat). If its weight sits below `allowBelow`, then a thief who has the
+ * password and happens to be on any network the student has used before — campus wifi,
+ * their home IP, localhost in a demo — is let straight through with no MFA, because no
+ * other signal necessarily fires. That silently defeats step-up in exactly the scenario it
+ * exists to defend. Hence 30, not 25: it must clear `allowBelow` unaided.
+ *
+ * newIpAddress deliberately stays BELOW the threshold: a proven device on a new network
+ * (student switching wifi, travelling) is a weaker signal and shouldn't demand MFA alone —
+ * but combined with a new device (30 + 20 = 50) it comfortably does.
+ */
 export const signalWeights: Record<keyof RiskSignals, number> = {
-  newDevice: 25,
+  newDevice: 30,
   newIpAddress: 20,
   oddHour: 10,
   staleSession: 15,
@@ -22,6 +39,22 @@ export const thresholds = {
   stepUpBelow: 60,
   denyBelow: 85,
 } as const
+
+/**
+ * Fail fast at startup rather than ship a policy that silently lets stolen credentials
+ * through. These weights are meant to be tuned (that's the point of this file — ROADMAP §4.2
+ * wants their effect on the metrics demonstrated), and it is genuinely easy to nudge
+ * `newDevice` down without noticing that it has dropped below `allowBelow` and quietly
+ * disabled step-up for unrecognized devices. This bug shipped once; the assertion is here so
+ * it cannot ship again from a config edit alone.
+ */
+if (signalWeights.newDevice < thresholds.allowBelow) {
+  throw new Error(
+    `Zero Trust policy misconfigured: signalWeights.newDevice (${signalWeights.newDevice}) is below ` +
+      `thresholds.allowBelow (${thresholds.allowBelow}), so an unrecognized device would be ALLOWed ` +
+      `without step-up whenever no other signal fires. See the comment on signalWeights.`,
+  )
+}
 
 /** Local hours considered normal activity; outside this window raises the oddHour signal. */
 export const businessHours = { startHour: 6, endHour: 22 } as const

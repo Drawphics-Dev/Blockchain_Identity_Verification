@@ -14,6 +14,7 @@ import type {
   SemesterResult,
   Student,
 } from '@/types'
+import { collectTelemetry } from './telemetry'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000'
 const TOKEN_KEY = 'mu.token'
@@ -73,6 +74,7 @@ async function request<T>(path: string, init: RequestInit = {}, isRetry = false)
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      'X-Device-Telemetry': collectTelemetry(),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
@@ -106,10 +108,42 @@ async function request<T>(path: string, init: RequestInit = {}, isRetry = false)
 // ---- Auth ----
 
 export const login = (studentId: string, password: string) =>
-  request<{ token: string; expiresAt: string; student: Student }>('/api/auth/login', {
+  request<{
+    token: string
+    expiresAt: string
+    student: Student
+    stepUpRequired: boolean
+    mfaEnrolled: boolean
+  }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ studentId, password }) })
+
+/**
+ * The one-time enrollment reveal. Requires the registrar's out-of-band enrollment token — a
+ * correct password is deliberately not enough, or a password thief could bind their own
+ * authenticator. 403 `invalid_enrollment_token` if wrong; 409 `already_enrolled` once bound.
+ */
+export const fetchMfaEnrollment = (token: string) =>
+  request<{ secret: string; otpauthUrl: string; qrDataUrl: string }>(
+    `/api/auth/mfa/enroll?token=${encodeURIComponent(token)}`,
+  )
+
+/** Binds the authenticator by proving the token AND a code from it, satisfying the step-up. */
+export const completeMfaEnrollment = (token: string, code: string) =>
+  request<{ ok: true; validUntil: string }>('/api/auth/mfa/enroll', {
     method: 'POST',
-    body: JSON.stringify({ studentId, password }),
+    body: JSON.stringify({ token, code }),
   })
+
+/** True when this account still needs to bind an authenticator (i.e. enrollment is pending). */
+export const isMfaEnrollmentPending = async (): Promise<boolean> => {
+  try {
+    // A deliberately-empty token: we only want the server's verdict on WHICH challenge this
+    // is, not the secret. `already_enrolled` (409) => verify. Anything else => enroll.
+    await request('/api/auth/mfa/enroll?token=')
+    return true
+  } catch (err) {
+    return !(err instanceof ApiError && err.code === 'already_enrolled')
+  }
+}
 
 export const logout = () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' })
 

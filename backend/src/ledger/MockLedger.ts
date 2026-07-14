@@ -1,94 +1,166 @@
 /**
- * MockLedger — DEV-ONLY stand-in for Hyperledger Fabric.
+ * MockLedger — the stand-in for Hyperledger Fabric until Phases 4–5 exist.
  *
- * ⚠️ Not part of the approved (Fabric-first) deployment — it exists so the backend can
- * run and be tested on Windows before the real Fabric ledger (Phases 4–5) is stood up.
- * The final reported results come from FabricLedger, not this.
+ * ⚠️ Not the approved deployment target. The final reported results come from
+ * FabricLedger. This exists so the Zero Trust engine above it can be built, run and
+ * evaluated on Windows before the Fabric test-network is stood up.
  *
- * It mimics the ledger's guarantees in code:
- *   - append-only: there is NO update or delete path for audit records;
- *   - hash-chained: each record stores SHA-256(payload + prevHash), so altering any
- *     record breaks its own hash and every hash after it — exactly what makes the
- *     audit-integrity / tamper-detection metric work (ROADMAP §5).
+ * It imitates the ledger's guarantees rather than merely pretending to:
+ *
+ *   - DURABLE. Backed by PostgreSQL (LedgerIdentity / LedgerAuditRecord). An earlier
+ *     version kept the chain in a JS array, which meant every process restart silently
+ *     erased the entire audit trail and every identity anchor — an "immutable audit trail"
+ *     that does not survive a restart demonstrates nothing.
+ *   - APPEND-ONLY. There is no update or delete path for audit records anywhere in this
+ *     class. `revokeIdentity` is the sole mutation, and only on the identity table, because
+ *     Zero Trust revocation demands it (ROADMAP §4.2).
+ *   - HASH-CHAINED. Each record stores SHA-256(payload + prevHash), so altering any record
+ *     breaks its own hash and every hash after it. This is what makes the tamper-detection
+ *     metric (ROADMAP §5, §7d) real rather than asserted.
+ *
+ * When FabricLedger lands it implements this same interface and nothing above it changes.
  */
-import type {
-  AccessEvent,
-  AuditRecord,
-  IdentityAnchor,
-} from '../types'
+import type { AccessEvent, AuditRecord, IdentityAnchor } from '../types'
+import { prisma } from '../db/prisma'
 import type { LedgerService } from './LedgerService'
 import { hashEvent } from './hashEvent'
 
 const GENESIS_HASH = '0'.repeat(64)
 
+/**
+ * Serialises appends across concurrent requests.
+ *
+ * The chain is only sound if "read the last hash" and "insert linking to it" happen
+ * atomically. They do not by default: a single dashboard load fires four API calls in
+ * parallel, each of which logs a decision, so two appends can read the same tail and both
+ * link to it — forking the chain and corrupting every verification after that point. A
+ * transaction alone does NOT prevent this (the reads don't conflict under Postgres' default
+ * READ COMMITTED). A transaction-scoped advisory lock does: it is held to commit and
+ * released automatically, even if the transaction aborts.
+ */
+const CHAIN_LOCK_KEY = 4_812_003
+
 export class MockLedger implements LedgerService {
   readonly kind = 'mock' as const
 
-  private readonly identities = new Map<string, IdentityAnchor>()
-  /** Append-only: only ever pushed to, never spliced or mutated. */
-  private readonly auditLog: AuditRecord[] = []
-
-  // ---- Identity ----
+  // ---- Identity (IdentityContract) ----
 
   async registerIdentity(
     studentId: string,
     credentialHash: string,
     publicKey: string,
   ): Promise<IdentityAnchor> {
-    const anchor: IdentityAnchor = {
-      studentId,
-      credentialHash,
-      publicKey,
-      revoked: false,
-      registeredAt: new Date().toISOString(),
-    }
-    this.identities.set(studentId, anchor)
-    return anchor
+    const row = await prisma.ledgerIdentity.upsert({
+      where: { studentId },
+      // Re-anchoring an existing identity is how a credential rotation is recorded; it
+      // deliberately clears `revoked` only via an explicit re-registration, never implicitly.
+      update: { credentialHash, publicKey },
+      create: { studentId, credentialHash, publicKey },
+    })
+    return this.toAnchor(row)
   }
 
   async verifyIdentity(studentId: string, credentialHash: string): Promise<boolean> {
-    const anchor = this.identities.get(studentId)
-    return !!anchor && !anchor.revoked && anchor.credentialHash === credentialHash
+    const row = await prisma.ledgerIdentity.findUnique({ where: { studentId } })
+    return !!row && !row.revoked && row.credentialHash === credentialHash
   }
 
   async revokeIdentity(studentId: string): Promise<void> {
-    const anchor = this.identities.get(studentId)
-    if (anchor) this.identities.set(studentId, { ...anchor, revoked: true })
+    await prisma.ledgerIdentity.updateMany({ where: { studentId }, data: { revoked: true } })
   }
 
   async getIdentity(studentId: string): Promise<IdentityAnchor | null> {
-    return this.identities.get(studentId) ?? null
+    const row = await prisma.ledgerIdentity.findUnique({ where: { studentId } })
+    return row ? this.toAnchor(row) : null
   }
 
-  // ---- Audit ----
+  // ---- Audit (AuditContract) ----
 
   async logAccessEvent(event: AccessEvent): Promise<AuditRecord> {
-    const prevHash = this.auditLog.at(-1)?.hash ?? GENESIS_HASH
-    const record: AuditRecord = {
-      ...event,
-      prevHash,
-      hash: hashEvent(event, prevHash),
-    }
-    this.auditLog.push(record) // append-only — the sole write path
-    return record
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CHAIN_LOCK_KEY})`
+
+      const tail = await tx.ledgerAuditRecord.findFirst({
+        orderBy: { seq: 'desc' },
+        select: { hash: true },
+      })
+      const prevHash = tail?.hash ?? GENESIS_HASH
+
+      const created = await tx.ledgerAuditRecord.create({
+        data: {
+          eventId: event.eventId,
+          studentId: event.studentId,
+          resource: event.resource,
+          decision: event.decision,
+          riskScore: event.riskScore,
+          timestamp: new Date(event.timestamp),
+          prevHash,
+          hash: hashEvent(event, prevHash),
+        },
+      })
+      return this.toRecord(created)
+    })
   }
 
   async getAuditEvent(eventId: string): Promise<AuditRecord | null> {
-    return this.auditLog.find((r) => r.eventId === eventId) ?? null
+    const row = await prisma.ledgerAuditRecord.findUnique({ where: { eventId } })
+    return row ? this.toRecord(row) : null
   }
 
   async getAuditTrail(studentId?: string): Promise<AuditRecord[]> {
-    const trail = studentId
-      ? this.auditLog.filter((r) => r.studentId === studentId)
-      : this.auditLog
-    return [...trail] // copy so callers can't mutate the log
+    const rows = await prisma.ledgerAuditRecord.findMany({
+      where: studentId ? { studentId } : undefined,
+      orderBy: { seq: 'asc' },
+    })
+    return rows.map((row) => this.toRecord(row))
   }
 
   async verifyEventIntegrity(eventId: string, offchainHash: string): Promise<boolean> {
     const record = await this.getAuditEvent(eventId)
     if (!record) return false
-    // Recompute from the on-chain payload; compare to the supplied off-chain hash.
+    // Two independent checks: the on-chain record must still hash to its own stored hash
+    // (the chain is intact), AND the off-chain copy must agree with it (no tampering).
     const expected = hashEvent(record, record.prevHash)
     return expected === record.hash && record.hash === offchainHash
+  }
+
+  // ---- Row → domain shape ----
+
+  private toAnchor(row: {
+    studentId: string
+    credentialHash: string
+    publicKey: string
+    revoked: boolean
+    registeredAt: Date
+  }): IdentityAnchor {
+    return {
+      studentId: row.studentId,
+      credentialHash: row.credentialHash,
+      publicKey: row.publicKey,
+      revoked: row.revoked,
+      registeredAt: row.registeredAt.toISOString(),
+    }
+  }
+
+  private toRecord(row: {
+    eventId: string
+    studentId: string
+    resource: string
+    decision: string
+    riskScore: number
+    timestamp: Date
+    hash: string
+    prevHash: string
+  }): AuditRecord {
+    return {
+      eventId: row.eventId,
+      studentId: row.studentId,
+      resource: row.resource,
+      decision: row.decision as AuditRecord['decision'],
+      riskScore: row.riskScore,
+      timestamp: row.timestamp.toISOString(),
+      hash: row.hash,
+      prevHash: row.prevHash,
+    }
   }
 }

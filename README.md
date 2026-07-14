@@ -5,11 +5,17 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 
 **Security challenges addressed:** credential compromise, data adulteration, lateral movement.
 
-> **Status: the portal works end-to-end on real data.**
-> Log in, register and drop courses, view fees and results — all backed by PostgreSQL, with
-> bcrypt passwords and revocable JWT sessions. What does **not** exist yet is the security
-> research half: the Fabric network, the chaincode, and the Zero Trust risk engine.
-> See [Current status](#current-status) for the honest breakdown.
+> **Status: the Zero Trust engine is live and enforcing.**
+> Every login and every protected request is risk-scored (device, network, time, session age,
+> request rate, resource sensitivity) and enforced — ALLOW / STEP_UP (TOTP MFA) / DENY /
+> TERMINATE. A background monitor can also end a session with no new request. Every decision is
+> written through a ledger abstraction and mirrored to PostgreSQL with a tamper-detection check
+> that's been proven to actually catch tampering, not just typecheck.
+> The full React portal (Phase 7) is done too, including MFA built into the sign-in flow itself
+> and a working Admin/Research view. What does **not** exist yet: the real Hyperledger Fabric
+> network (still running on an in-memory mock behind the same interface), and the scripted
+> attack scenarios + metrics engine (Phases 8–9). See [Current status](#current-status) for the
+> full breakdown.
 
 ## Documents
 
@@ -23,15 +29,15 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 
 | Phase | Status | What actually exists |
 |---|---|---|
-| 1 — Environment setup | ❌ Not started | Node 20+ and PostgreSQL 18 are running. No Ubuntu/WSL2, Docker, or Fabric 2.5 binaries. **This blocks Phases 4–5.** |
-| 2 — Scaffold + ledger interface | ✅ **Done** | Repo structure in place (two top-level folders — see below). `LedgerService` interface (8 methods), a working hash-chained `MockLedger`, and a `FabricLedger` stub behind the same interface. |
-| 3 — PostgreSQL | ✅ **Done** | Prisma schema, applied migration, and a seed script. Nine tables: Student, Course, Enrollment, FeeStatement, FeeItem, Payment, ResultSet, ResultRecord, Session. |
-| 4 — Fabric network | ❌ Not started | — |
+| 1 — Environment setup | ❌ Not started | Node 20+ and PostgreSQL are running. No Ubuntu/WSL2, Docker, or Fabric 2.5 binaries. **This blocks Phases 4–5.** |
+| 2 — Scaffold + ledger interface | ✅ Done | `LedgerService` interface (8 methods), a working hash-chained `MockLedger`, and a `FabricLedger` stub behind the same interface. |
+| 3 — PostgreSQL | ✅ Done | Schema extended with `RiskEvent`, `AuditMirror`, `Device`, `KnownNetwork` for the engine. Seed now produces **30 students** (1 hand-authored + 29 generated) — meets the Phase 8/9 population target early. |
+| 4 — Fabric network | ❌ Not started | Blocked by Phase 1. |
 | 5 — Chaincode | ❌ Not started | `backend/chaincode/` contains a spec README and no code. |
-| 6 — Backend + Zero Trust engine | 🟡 **Half done** | **Done:** bcrypt + JWT auth, DB-backed revocable sessions, and the full portal API (courses, enrolment, fees, results) — all working. **Missing:** the PDP risk engine, the PEP middleware, and TOTP MFA. Nothing is risk-scored yet. |
-| 7 — React portal | 🟡 **Mostly done** | Every page now reads live data from the API — no mock files remain. **Missing:** the admin/audit view, the Verify Integrity button, and per-request telemetry. |
+| 6 — Backend + Zero Trust engine | ✅ **Done** | PDP risk engine, PEP middleware on every protected route, TOTP step-up MFA, an on-chain identity-anchor check at login (independent of the password — enables real revocation), a continuous background monitor, and the audit integrity verifier endpoint. All tested live, not just typechecked. |
+| 7 — React portal | ✅ **Done** | Login **with MFA built into the sign-in flow itself** (two-step: password, then TOTP only if the engine flags the device/network — no jarring dialog after the fact), Dashboard, Course Registration, Fee Statement, Results, and the Admin/Research view (audit trail, Verify Integrity button, live metrics). Real per-request client telemetry (locale, timezone, screen, hardware concurrency) collected in the browser and folded into the device-fingerprint signal server-side. All tested live in a browser, not just typechecked. |
 | 8 — Attack scenarios | ❌ Not started | `backend/simulation/` contains a spec README and no code. |
-| 9 — Metrics & evaluation | ❌ Not started | `backend/evaluation/` contains a spec README and no code. |
+| 9 — Metrics & evaluation | 🟡 Barely started | The Admin view computes **continuous-validation metrics for real** (mean anomaly detection time, session termination rate) straight from live session data. **Missing:** TAR/FAR/FRR, attack resistance %, and the CES composite — all need labelled attack-vs-legitimate traffic from Phase 8, which doesn't exist yet. No CSV/JSON export, no charts. |
 
 ## Repository structure
 
@@ -55,57 +61,61 @@ deployed to and executed by the Fabric peers, not the Express server, and keeps 
 
 ## What has been built
 
-### The portal works, on real data
+### The Zero Trust engine (`backend/src/zerotrust/`)
 
-The whole flow is live: sign in → dashboard → register/drop courses → fees → results → sign out.
-Nothing is mocked. Registering a course writes an `Enrollment` row and increments the course's
-seat count in the same transaction; reload the page and it is still there.
+Every login and every request to `/api/courses`, `/api/enrollments`, `/api/fees`, `/api/results`
+is scored by the **PDP** (`pdp.ts`) against six live signals — new device, new network, odd hour,
+stale session, high request rate, sensitive resource — weighted and thresholded in
+`config/policy.config.ts`. The **PEP** (`pep.middleware.ts`) enforces the result: `ALLOW` passes
+through, `STEP_UP` blocks with `403` until a TOTP code is verified (`POST /api/auth/step-up`),
+`DENY` blocks the request outright, `TERMINATE` revokes the session. A background monitor
+(`continuousMonitor.ts`) re-scores active sessions on an interval and can terminate one with no
+new request — the "no new user action" half of continuous verification.
 
-**Authentication** (`backend/src/auth/`)
-- Passwords are **bcrypt** hashes; the raw password is never stored.
-- Login issues a **JWT** whose `jti` is a `Session` row's id. Every protected request re-checks
-  that row in PostgreSQL — so a valid signature alone is **never** sufficient. Logging out revokes
-  the row, and the token dies instantly even though it has not expired. That server-side
-  revocation is the Zero Trust property the project is built to demonstrate, and it is the hook
-  the future `TERMINATE_SESSION` decision will use.
-- Login failures return **one** message for both a bad ID and a bad password, and a dummy bcrypt
-  comparison runs when the ID is unknown — so neither the response nor its timing reveals which
-  student IDs exist.
+**Identity anchoring** (`identity.ts`) is a second, independent gate on top of the password: login
+verifies (and anchors, on first use) an identity on the ledger via `LedgerService.verifyIdentity`.
+A revoked anchor blocks login even with the correct password — something bcrypt alone can never
+provide.
 
-**Portal API** (`backend/src/portal/`) — `/api/courses`, `/api/enrollments` (GET/POST/DELETE),
-`/api/fees`, `/api/results`. Every route is behind `requireAuth` and scoped to the student in the
-token, so nobody can read another student's fees or results. Enrolment is transactional and the
-server is the authority: it re-checks seat availability and the 24-credit cap inside the
-transaction, so two simultaneous registrations cannot both take the last seat.
+Every decision — good or bad — is written through `LedgerService` and mirrored to PostgreSQL
+(`RiskEvent`, `AuditMirror`). The tamper-detection check (`GET /api/admin/audit/verify/:eventId`)
+recomputes the mirror's hash from its *current* data and compares it to the immutable on-chain
+hash — proven to work by directly editing a database row and watching the check catch it.
 
-**Derived, never stored** — cumulative GPA, registered credits, fee totals and a course's
-effective status are all computed from the underlying rows, so they cannot drift out of sync.
-(One visible consequence: the dashboard now shows a cumulative GPA of **3.46**, not the mock's
-3.72 — 3.72 was only the most recent semester. 3.46 is the real credit-weighted figure across
-both semesters.)
+### The Admin / Research view (`frontend/src/pages/Admin.tsx`)
 
-**Database** (`backend/prisma/`) — Prisma schema + migration + seed. Note that Prisma 7 no longer
-accepts the connection URL in `schema.prisma`: it lives in `prisma.config.ts` for the CLI, and is
-passed to the client through the `@prisma/adapter-pg` driver adapter in `src/db/prisma.ts`.
+Reachable via **Research View** in the nav, open to any signed-in student (there is no separate
+admin role in the data model — this is a research-transparency view, not a locked-down console).
+Shows the access-decision distribution, session/termination stats, mean anomaly detection time
+computed from real data, the full audit trail (searchable by student, newest first), and a
+**Verify Integrity** button per record.
 
-**The ledger abstraction** (`backend/src/ledger/`) — unchanged and still the key design decision.
-A single `LedgerService` interface (8 methods) that the backend talks to instead of Fabric.
-`MockLedger` implements it in memory with the ledger's real guarantees (append-only, and
-hash-chained via `SHA-256(payload + prevHash)`, so altering any record breaks its own hash and
-every hash after it). `FabricLedger` implements the same interface and currently throws
-`"implement in ROADMAP Phases 4–5"`. **Nothing calls the ledger yet** — it wires in with the
-Zero Trust engine.
+### The portal (unchanged from before, still real)
 
-### Still missing — the security half
+Sign in → dashboard → register/drop courses → fees → results → sign out, all backed by
+PostgreSQL. Enrolment is transactional: seat availability and the 24-credit cap are re-checked
+*inside* the transaction. GPA, credit totals, and course status are derived on every read, never
+stored, so they cannot drift.
 
-- `src/zerotrust/pdp.ts` — the Policy **Decision** Point (risk scoring). Still 7 lines: a type + a TODO.
-- `src/zerotrust/pep.middleware.ts` — the Policy **Enforcement** Point. Still calls `next()`
-  unconditionally, enforcing nothing.
-- `src/config/policy.config.ts` — thresholds are set (see below), but `signalWeights` is empty.
-- TOTP step-up MFA — deferred until the PDP exists, since the PDP is what decides *when* to demand it.
-- The dashboard's **Trust Score is a hard-coded placeholder (94)**, and the UI says so on its face
-  rather than implying a risk engine that does not exist. The blockchain audit-trail panel was
-  removed for the same reason: it was showing four fabricated rows.
+### The ledger abstraction (`backend/src/ledger/`)
+
+Still the key design decision: a single `LedgerService` interface (8 methods) the backend talks
+to instead of Fabric directly. `FabricLedger` implements the same interface and currently throws
+`"implement in ROADMAP Phases 4–5"` — when the real network exists, nothing above this interface
+needs to change.
+
+`MockLedger` is the stand-in until then, and it imitates the ledger's guarantees rather than
+merely asserting them:
+
+- **Durable.** Backed by dedicated PostgreSQL tables (`LedgerIdentity`, `LedgerAuditRecord`).
+  An earlier version held the chain in a JS array, so **every process restart silently erased
+  the entire audit trail and every identity anchor.** An "immutable audit trail" that does not
+  survive a restart demonstrates nothing — this was a real bug, found and fixed.
+- **Append-only.** There is no update or delete path for audit records anywhere in the class.
+- **Hash-chained,** with appends serialised by a transaction-scoped Postgres advisory lock. This
+  is not ceremonial: one dashboard load fires four API calls in parallel, each logging a
+  decision, so without it two appends can read the same chain tail and both link to it — forking
+  the chain and corrupting every verification after that point.
 
 ## Design decisions locked in
 
@@ -122,7 +132,7 @@ Zero Trust engine.
 **Tamper detection:** each audit event is written on-chain *and* mirrored to PostgreSQL. The
 tampering scenario edits the PostgreSQL copy; the integrity verifier re-reads the on-chain
 record and compares hashes. A mismatch means tampering. The ledger cannot be altered, so
-tampering is always caught.
+tampering is always caught. **This has been tested against a real tampered record, not assumed.**
 
 **Zero Trust decision policy** (thresholds live in `backend/src/config/policy.config.ts`
 so their effect on the metrics can be demonstrated):
@@ -132,12 +142,35 @@ so their effect on the metrics can be demonstrated):
 | under 30 | `ALLOW` |
 | 30–59 | `STEP_UP` (MFA / re-verify identity on-chain) |
 | 60–84 | `DENY` |
-| 85+ | `TERMINATE_SESSION` |
+| 85+ | `TERMINATE` |
 
 **The dependency chain** the whole project rests on: chaincode gives us an unforgeable ledger →
 the backend uses it to make and record Zero Trust decisions → `simulation/` stress-tests those
-decisions → `evaluation/` scores them. The portal end of that chain is now real; the ledger and
-risk-engine end is not.
+decisions → `evaluation/` scores them. The backend end of that chain is now real and tested; the
+Fabric-network end (Phases 4–5) and the scripted-evaluation end (Phases 8–9) are not.
+
+## Verifying the engine yourself
+
+Don't take the claims above on trust — the engine ships with an end-to-end test suite that
+drives the **real running backend over HTTP** (no mocks, no internal shortcuts) and asserts
+every property the roadmap claims. It exits non-zero if any check fails.
+
+```bash
+cd backend
+npm run dev        # terminal 1
+npm run test:e2e   # terminal 2  (~1 min: it waits for a real background-monitor tick)
+```
+
+27 checks, covering: an unrecognized device demands MFA · protected data is unreachable until
+step-up is satisfied · a wrong code is rejected but retryable · **abandoning step-up does not
+whitelist the device** · a correct code grants access · a proven device is remembered · **a
+stolen password from a new device is still challenged** · invalid credentials are refused ·
+every decision reaches the ledger, correctly hash-chained · **tampering with the off-chain copy
+is detected** · **a revoked identity cannot log in even with the right password** · **a hijacked
+session is terminated mid-flight by the background monitor, with no new request from the user**.
+
+The bolded ones are properties that regressed or were missing at some point during development
+and were caught here. That is what the suite is for.
 
 ## Running it
 
@@ -150,7 +183,7 @@ cd backend
 npm install
 cp .env.example .env      # then set DATABASE_URL and JWT_SECRET
 npm run db:migrate        # create the tables
-npm run db:seed           # load the demo student, courses, fees, results
+npm run db:seed           # load the 30 students, courses, fees, results (prints the hero's TOTP secret)
 npm run dev               # http://localhost:3000
 ```
 
@@ -158,17 +191,22 @@ npm run dev               # http://localhost:3000
 log in, click *Authorize*, and call any endpoint from the browser).
 
 Percent-encode reserved characters in the DB password (`@` → `%40`) or the URL will not parse.
-Useful extras: `npm run db:studio` (browse the data), `npm run db:reset` (wipe + re-seed).
+Useful extras: `npm run db:studio` (browse the data), `npm run db:reset` (wipe + re-seed — this
+also generates fresh TOTP secrets, invalidating any authenticator app entries from before).
 
 **Frontend** — in a second terminal:
 
 ```bash
 cd frontend
 npm install
-npm run dev               # http://localhost:5173
+npm run dev               # http://localhost:5173 (or the next free port)
 ```
 
-**Sign in** with `SU/CS/2023/0187` / `demo1234`.
+**Sign in** with `SU/CS/2023/0187` / `demo1234`. If the engine flags the login (new device/
+network — likely on first use), it'll ask for a TOTP code: fetch the account's secret via
+`GET /api/auth/mfa-secret` while signed in, and either scan it into an authenticator app or
+compute a code with `otplib` directly. This convenience endpoint is prototype-only — see the
+comment on it in `auth.routes.ts`.
 
 ## Planned: chaincode, simulation, evaluation
 
@@ -178,31 +216,38 @@ These three directories currently hold **specifications only** — no code.
   (`registerIdentity`, `verifyIdentity`, `revokeIdentity`, `getIdentity`) and `AuditContract`
   (`logAccessEvent`, `getAuditEvent`, `getAuditTrail`, `verifyEventIntegrity`; append-only,
   hash-chained). The signatures deliberately mirror `LedgerService` so `FabricLedger` stays a
-  thin wrapper.
+  thin wrapper — the backend already calls every one of these methods correctly against the mock.
 - **`backend/simulation/`** (Phase 8) — the five required scenarios, each emitting labelled outcomes for
   the metrics engine: genuine login (→ ALLOW), invalid credentials (→ DENY), credential theft &
   imitation (→ STEP_UP then DENY), log tampering (→ integrity verifier flags the mismatch), and
-  abnormal behaviour (→ mid-session TERMINATE).
+  abnormal behaviour (→ mid-session TERMINATE). The engine that would produce each of these five
+  outcomes already exists and is working — this phase is about scripting repeatable runs against it.
 - **`backend/evaluation/`** (Phase 9) — computes TAR / FRR / FAR, attack resistance %, mean anomaly
   detection time, session termination rate, audit integrity %, and the client's **Composite
   Effectiveness Score**:
   `CES = 0.4·AccessControl + 0.3·ContinuousValidation + 0.2·AuditIntegrity + 0.1·AuthenticationPerformance`.
-  Outputs CSV/JSON plus charts.
+  Outputs CSV/JSON plus charts. The continuous-validation half is already computed live in the
+  Admin view (`GET /api/admin/metrics`) — this phase is mainly the other three metric groups,
+  which need Phase 8's labelled data to mean anything.
 
 ## Open items
 
-1. **Nothing is risk-scored yet.** The portal authenticates and authorises correctly, but there
-   is no continuous verification: no risk score, no ALLOW/STEP_UP/DENY/TERMINATE decision, no
-   ledger write on access. That is the rest of Phase 6, and it is the project's core claim.
-2. **Phase 1 is the bottleneck for the blockchain.** Fabric needs Linux + Docker; we are on
+1. **Phase 1 is the bottleneck for the blockchain.** Fabric needs Linux + Docker; we are on
    Windows. Until WSL2 + Docker + the Fabric 2.5 test-network exist, Phases 4 and 5 cannot start.
-3. **"Authentication Performance" is undefined.** It carries 10% of the CES weight but was never
+   Everything above them (the engine, the audit trail) currently runs against `MockLedger`, behind
+   the same interface `FabricLedger` will eventually implement for real.
+2. **"Authentication Performance" is undefined.** It carries 10% of the CES weight but was never
    specified in the brief. A concrete definition (login/token-issuance latency? MFA verification
    time?) is needed from the client before Phase 9 can compute CES.
-4. **One demo student only.** Phases 8–9 need a population of 20–50 students to produce
-   meaningful TAR/FAR/FRR figures; extend `backend/prisma/seed.ts` then.
-5. **The 24-credit cap is enforced but unreachable** with the current 7-course catalogue — the
-   most a student can register is 18 credits. Add courses before relying on that rule in a demo.
+3. **No admin/role model.** The Admin/Research view is reachable by any signed-in student — there
+   is no staff/researcher account type in the schema. Fine for a research demo; would need a real
+   role system to restrict.
+4. **MFA enrollment isn't a real screen yet.** `GET /api/auth/mfa-secret` is a testing convenience,
+   not an onboarding flow (no QR code shown at signup, no "scan this" UI).
+5. **Phase 8/9 scripted evaluation hasn't started.** The engine that would generate labelled
+   outcomes for all five scenarios already works (verified manually for each of ALLOW/STEP_UP/
+   DENY/TERMINATE and the tamper-detection case) — what's missing is scripting them as repeatable,
+   automated runs and computing TAR/FAR/FRR/CES from the results.
 
 ### Security note
 
@@ -213,8 +258,9 @@ gitignored.
 
 ## Scope & ethics
 
-Prototype scale: a 2-org Fabric test-network on a single host — functional, not production.
-Device and behaviour signals are simplified; the risk engine is rule-based (chosen for
+Prototype scale: a 2-org Fabric test-network on a single host (once Phase 4 exists) — functional,
+not production. Device and behaviour signals are derived server-side from request headers, not a
+dedicated client-side fingerprinting library. The risk engine is rule-based (chosen for
 reproducibility over a black box). **In scope:** credential theft, log tampering, abnormal
 behaviour. **Out of scope:** network-layer attacks, DoS, insider chaincode compromise.
 Synthetic data only — no real student data or third-party systems.

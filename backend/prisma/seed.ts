@@ -14,7 +14,21 @@ import 'dotenv/config'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient, type CourseStatus, type FeeCategory } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { randomInt as cryptoRandomInt } from 'node:crypto'
 import { generateSecret } from 'otplib'
+
+/**
+ * The one-time enrollment token the registrar issues with the account and hands over out of
+ * band — in person, or to an already-verified address. Never down the same channel as the
+ * password: that is the entire point of it (see Student.enrollmentToken).
+ *
+ * Ambiguous glyphs (O/0, I/1) are excluded, because a human reads this off paper and types it.
+ */
+function issueEnrollmentToken(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const raw = Array.from({ length: 12 }, () => alphabet[cryptoRandomInt(alphabet.length)]).join('')
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`
+}
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })
 const prisma = new PrismaClient({ adapter })
@@ -215,6 +229,24 @@ async function main() {
   await prisma.student.deleteMany()
   await prisma.course.deleteMany()
 
+  /**
+   * Reset the ledger too, and the off-chain audit mirror with it.
+   *
+   * This is the ONLY place anything outside src/ledger/ may delete ledger rows, and it is
+   * not a violation of append-only — it is tearing the whole prototype ledger down and
+   * starting a new chain, which is what re-seeding means. (A real Fabric network would be
+   * reset by tearing down the test-network, not by deleting rows.)
+   *
+   * It must happen here, because seeding regenerates every student's password hash, and the
+   * identity anchor is a commitment to that hash. Leaving the old anchors behind would make
+   * every stored hash disagree with its anchor, and every login would be refused with
+   * `identity_mismatch` — a permanent lockout, with the system correctly reporting tampering
+   * it had itself caused.
+   */
+  await prisma.ledgerAuditRecord.deleteMany()
+  await prisma.ledgerIdentity.deleteMany()
+  await prisma.auditMirror.deleteMany()
+
   // seatsTaken starts at 0 and is written for real at the end, once every enrollment this
   // script creates (hero + synthetic) is known.
   await prisma.course.createMany({ data: courses.map((c) => ({ ...c, seatsTaken: 0 })) })
@@ -230,7 +262,7 @@ async function main() {
 
   // ---- Hero student — unchanged from before ----
 
-  const heroTotpSecret = generateSecret()
+  const heroEnrollmentToken = issueEnrollmentToken()
   const hero = await prisma.student.create({
     data: {
       studentId: 'SU/CS/2023/0187',
@@ -239,7 +271,8 @@ async function main() {
       program: 'BSc Computer Science',
       level: '300 Level',
       passwordHash: await bcrypt.hash(DEMO_PASSWORD, 10),
-      totpSecret: heroTotpSecret,
+      totpSecret: generateSecret(),
+      enrollmentToken: heroEnrollmentToken,
     },
   })
 
@@ -272,7 +305,6 @@ async function main() {
   let paymentSeq = 9_100_000
 
   for (const person of roster) {
-    const totpSecret = generateSecret()
     const student = await prisma.student.create({
       data: {
         studentId: person.studentId,
@@ -281,7 +313,8 @@ async function main() {
         program: 'BSc Computer Science',
         level: person.level,
         passwordHash: await bcrypt.hash(DEMO_PASSWORD, 10),
-        totpSecret,
+        totpSecret: generateSecret(),
+        enrollmentToken: issueEnrollmentToken(),
       },
     })
 
@@ -355,10 +388,15 @@ async function main() {
     `Seeded: ${1 + roster.length} students (hero: ${hero.studentId} / ${DEMO_PASSWORD} — every ` +
       `synthetic student shares this password), ${courses.length} courses.`,
   )
-  console.log(`Hero step-up MFA (TOTP) secret: ${heroTotpSecret}`)
-  console.log(
-    'Every other student has their own TOTP secret — fetch it via GET /api/auth/mfa-secret once signed in.',
-  )
+  console.log('')
+  console.log('  Enrollment token for the demo student — this is what the registrar would hand')
+  console.log('  the student in person, NOT down the same channel as the password. It is needed')
+  console.log('  once, to bind an authenticator app, and it is consumed on first use:')
+  console.log('')
+  console.log(`      ${hero.studentId}   ${heroEnrollmentToken}`)
+  console.log('')
+  console.log('  Every other student has their own token and TOTP secret. Nothing discloses them')
+  console.log('  over the API — that is deliberate (see Student.enrollmentToken in schema.prisma).')
 }
 
 main()
