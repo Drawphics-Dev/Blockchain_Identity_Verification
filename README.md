@@ -5,17 +5,19 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 
 **Security challenges addressed:** credential compromise, data adulteration, lateral movement.
 
-> **Status: the Zero Trust engine is live and enforcing.**
+> **Status: the Zero Trust engine is live and enforcing, and the evaluation pipeline is built.**
 > Every login and every protected request is risk-scored (device, network, time, session age,
 > request rate, resource sensitivity) and enforced — ALLOW / STEP_UP (TOTP MFA) / DENY /
 > TERMINATE. A background monitor can also end a session with no new request. Every decision is
 > written through a ledger abstraction and mirrored to PostgreSQL with a tamper-detection check
 > that's been proven to actually catch tampering, not just typecheck.
-> The full React portal (Phase 7) is done too, including MFA built into the sign-in flow itself
-> and a working Admin/Research view. What does **not** exist yet: the real Hyperledger Fabric
-> network (still running on an in-memory mock behind the same interface), and the scripted
-> attack scenarios + metrics engine (Phases 8–9). See [Current status](#current-status) for the
-> full breakdown.
+> The full React portal (Phase 7) is done, and so are the **scripted attack scenarios (Phase 8),
+> the metrics + CES engine (Phase 9), and the chaincode source (Phase 5)** — all built and tested
+> on Windows against the mock ledger. What does **not** exist yet: the real running Hyperledger
+> Fabric network (the engine still runs on an in-memory mock behind the same interface) and the
+> connection to it. That final leg — standing up the network, deploying the chaincode, and wiring
+> `FabricLedger` — is the deliberate "shift to Ubuntu" step, since Fabric needs Linux + Docker.
+> See [Current status](#current-status) for the full breakdown.
 
 ## Documents
 
@@ -33,11 +35,11 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 | 2 — Scaffold + ledger interface | ✅ Done | `LedgerService` interface (8 methods), a working hash-chained `MockLedger`, and a `FabricLedger` stub behind the same interface. |
 | 3 — PostgreSQL | ✅ Done | Schema extended with `RiskEvent`, `AuditMirror`, `Device`, `KnownNetwork` for the engine. Seed now produces **30 students** (1 hand-authored + 29 generated) — meets the Phase 8/9 population target early. |
 | 4 — Fabric network | ❌ Not started | Blocked by Phase 1. |
-| 5 — Chaincode | ❌ Not started | `backend/chaincode/` contains a spec README and no code. |
+| 5 — Chaincode | 🟡 Source done, not deployed | `backend/chaincode/` has `IdentityContract` + `AuditContract` (Node.js, `fabric-contract-api`), append-only + hash-chained, with `hashEvent.js` kept byte-identical to the backend's and a 26-check offline test suite (`npm test`). **Not deployed** — chaincode only runs on a live peer, which needs the Phase 4 network. |
 | 6 — Backend + Zero Trust engine | ✅ **Done** | PDP risk engine, PEP middleware on every protected route, TOTP step-up MFA, an on-chain identity-anchor check at login (independent of the password — enables real revocation), a continuous background monitor, and the audit integrity verifier endpoint. All tested live, not just typechecked. |
 | 7 — React portal | ✅ **Done** | Login **with MFA built into the sign-in flow itself** (two-step: password, then TOTP only if the engine flags the device/network — no jarring dialog after the fact), Dashboard, Course Registration, Fee Statement, Results, and the Admin/Research view (audit trail, Verify Integrity button, live metrics). Real per-request client telemetry (locale, timezone, screen, hardware concurrency) collected in the browser and folded into the device-fingerprint signal server-side. All tested live in a browser, not just typechecked. |
-| 8 — Attack scenarios | ❌ Not started | `backend/simulation/` contains a spec README and no code. |
-| 9 — Metrics & evaluation | 🟡 Barely started | The Admin view computes **continuous-validation metrics for real** (mean anomaly detection time, session termination rate) straight from live session data. **Missing:** TAR/FAR/FRR, attack resistance %, and the CES composite — all need labelled attack-vs-legitimate traffic from Phase 8, which doesn't exist yet. No CSV/JSON export, no charts. |
+| 8 — Attack scenarios | ✅ **Done** | `backend/simulation/` scripts all five scenarios (genuine login, invalid credentials, credential theft, log tampering, abnormal behaviour), driving the **real backend over HTTP** and emitting labelled outcomes to a JSON report. Run with `npm run sim`. |
+| 9 — Metrics & evaluation | ✅ **Done** | `backend/evaluation/` computes TAR/FAR/FRR, attack resistance %, continuous validation, audit integrity, and the **CES** from Phase 8's labelled report, exporting JSON + CSV + a self-contained HTML chart. Run with `npm run evaluate`. (The Admin view still computes the continuous-validation metrics live from real traffic.) One caveat: the CES "Authentication Performance" component is still undefined in the brief, so it's computed *provisionally* and CES is reported both with and without it. |
 
 ## Repository structure
 
@@ -49,9 +51,9 @@ and `evaluation` were nested under `backend/` at the client's request. See the d
 backend/
 ├── src/           Express + TypeScript: auth, portal API, Zero Trust engine, ledger client
 ├── prisma/        PostgreSQL schema, migrations, seed
-├── chaincode/     Hyperledger Fabric smart contracts (IdentityContract, AuditContract) [spec only]
-├── simulation/    The 5 scripted attack/usage scenarios                               [spec only]
-└── evaluation/    Metrics engine: TAR/FAR/FRR, attack resistance, CES                 [spec only]
+├── chaincode/     Hyperledger Fabric smart contracts (IdentityContract, AuditContract) [source + tests; deploy on Ubuntu]
+├── simulation/    The 5 scripted attack/usage scenarios  →  labelled report           [built · npm run sim]
+└── evaluation/    Metrics engine: TAR/FAR/FRR, attack resistance, CES  →  JSON/CSV/HTML [built · npm run evaluate]
 frontend/          React + Vite + TypeScript + Tailwind student portal. Talks to the API.
 ```
 
@@ -146,8 +148,9 @@ so their effect on the metrics can be demonstrated):
 
 **The dependency chain** the whole project rests on: chaincode gives us an unforgeable ledger →
 the backend uses it to make and record Zero Trust decisions → `simulation/` stress-tests those
-decisions → `evaluation/` scores them. The backend end of that chain is now real and tested; the
-Fabric-network end (Phases 4–5) and the scripted-evaluation end (Phases 8–9) are not.
+decisions → `evaluation/` scores them. The backend, simulation and evaluation ends of that chain
+are now real and tested (against the mock ledger); the chaincode is written and unit-tested but
+not yet deployed. Only the live Fabric-network end (Phases 1 + 4 + wiring `FabricLedger`) remains.
 
 ## Verifying the engine yourself
 
@@ -171,6 +174,27 @@ session is terminated mid-flight by the background monitor, with no new request 
 
 The bolded ones are properties that regressed or were missing at some point during development
 and were caught here. That is what the suite is for.
+
+### Running the evaluation pipeline (Phases 8–9)
+
+With the backend running, generate labelled attack-vs-legitimate traffic and score it:
+
+```bash
+cd backend
+npm run sim        # terminal 2 — runs the 5 scenarios, writes simulation/results/simulation-latest.json
+                   #              add `-- --quick` for a fast smoke run
+npm run evaluate   # computes TAR/FAR/FRR, attack resistance, CES → evaluation/results/ (JSON, CSV, HTML)
+```
+
+Open `backend/evaluation/results/metrics-latest.html` for the chart (confusion matrix, metric
+bars, CES gauge). A healthy run reports TAR 1.0 · FAR 0 · FRR 0 · attack resistance 100% · audit
+integrity 100% · session termination 100% · **CES 100/100** (excluding the still-undefined
+Authentication Performance component). The chaincode has its own offline tests too:
+
+```bash
+cd backend/chaincode
+npm install && npm test   # 26 checks: append-only, hash-chaining, tamper detection, identity semantics
+```
 
 ## Running it
 
@@ -208,46 +232,51 @@ network — likely on first use), it'll ask for a TOTP code: fetch the account's
 compute a code with `otplib` directly. This convenience endpoint is prototype-only — see the
 comment on it in `auth.routes.ts`.
 
-## Planned: chaincode, simulation, evaluation
+## Built: chaincode, simulation, evaluation
 
-These three directories currently hold **specifications only** — no code.
+All three directories now hold working code (chaincode is written and unit-tested; deployment
+awaits the Ubuntu/Fabric step). Each has its own README with details.
 
 - **`backend/chaincode/`** (Phase 5) — Node.js chaincode (`fabric-contract-api`). `IdentityContract`
   (`registerIdentity`, `verifyIdentity`, `revokeIdentity`, `getIdentity`) and `AuditContract`
   (`logAccessEvent`, `getAuditEvent`, `getAuditTrail`, `verifyEventIntegrity`; append-only,
-  hash-chained). The signatures deliberately mirror `LedgerService` so `FabricLedger` stays a
-  thin wrapper — the backend already calls every one of these methods correctly against the mock.
-- **`backend/simulation/`** (Phase 8) — the five required scenarios, each emitting labelled outcomes for
-  the metrics engine: genuine login (→ ALLOW), invalid credentials (→ DENY), credential theft &
-  imitation (→ STEP_UP then DENY), log tampering (→ integrity verifier flags the mismatch), and
-  abnormal behaviour (→ mid-session TERMINATE). The engine that would produce each of these five
-  outcomes already exists and is working — this phase is about scripting repeatable runs against it.
+  hash-chained). The signatures deliberately mirror `LedgerService` so `FabricLedger` stays a thin
+  wrapper. `lib/hashEvent.js` is kept byte-identical to the backend's `src/ledger/hashEvent.ts`
+  (the invariant tamper detection depends on), and `npm test` runs 26 offline checks covering
+  append-only enforcement, hash-chaining, tamper detection and the identity semantics. **Not yet
+  deployed** — chaincode only executes on a live Fabric peer.
+- **`backend/simulation/`** (Phase 8) — the five required scenarios, each driving the real backend
+  over HTTP and emitting labelled outcomes: genuine login (→ ALLOW), invalid credentials (→ DENY),
+  credential theft & imitation (→ STEP_UP then blocked), log tampering (→ integrity verifier flags
+  the mismatch), and abnormal behaviour (→ mid-session TERMINATE). `npm run sim` writes a labelled
+  JSON report; scenario counts are configurable via env vars.
 - **`backend/evaluation/`** (Phase 9) — computes TAR / FRR / FAR, attack resistance %, mean anomaly
   detection time, session termination rate, audit integrity %, and the client's **Composite
   Effectiveness Score**:
   `CES = 0.4·AccessControl + 0.3·ContinuousValidation + 0.2·AuditIntegrity + 0.1·AuthenticationPerformance`.
-  Outputs CSV/JSON plus charts. The continuous-validation half is already computed live in the
-  Admin view (`GET /api/admin/metrics`) — this phase is mainly the other three metric groups,
-  which need Phase 8's labelled data to mean anything.
+  `npm run evaluate` reads Phase 8's report and outputs JSON + CSV + a self-contained HTML chart.
+  Because "Authentication Performance" is undefined in the brief (see Open items), it is computed
+  provisionally and CES is reported both including and excluding that 10% component.
 
 ## Open items
 
-1. **Phase 1 is the bottleneck for the blockchain.** Fabric needs Linux + Docker; we are on
-   Windows. Until WSL2 + Docker + the Fabric 2.5 test-network exist, Phases 4 and 5 cannot start.
-   Everything above them (the engine, the audit trail) currently runs against `MockLedger`, behind
-   the same interface `FabricLedger` will eventually implement for real.
-2. **"Authentication Performance" is undefined.** It carries 10% of the CES weight but was never
-   specified in the brief. A concrete definition (login/token-issuance latency? MFA verification
-   time?) is needed from the client before Phase 9 can compute CES.
+1. **The live blockchain is the only remaining leg — and it needs Linux.** All Windows-authorable
+   work is done; what's left is the deliberate Ubuntu port: WSL2 + Docker + the Fabric 2.5
+   test-network (Phases 1 + 4), deploying the already-written chaincode onto it, then filling in
+   `FabricLedger.ts` against `@hyperledger/fabric-gateway` and setting `LEDGER=fabric`. Everything
+   above the `LedgerService` interface — the engine, the audit trail, the simulation, the metrics —
+   runs unchanged once that flip happens.
+2. **"Authentication Performance" is still undefined.** It carries 10% of the CES weight but was
+   never specified in the brief. Phase 9 computes it *provisionally* (`1 − meanLoginLatency/budget`,
+   budget 1500 ms) and reports CES both with and without it, so nothing is overstated — but a
+   concrete definition from the client is needed to finalize the single headline CES.
 3. **No admin/role model.** The Admin/Research view is reachable by any signed-in student — there
    is no staff/researcher account type in the schema. Fine for a research demo; would need a real
    role system to restrict.
-4. **MFA enrollment isn't a real screen yet.** `GET /api/auth/mfa-secret` is a testing convenience,
-   not an onboarding flow (no QR code shown at signup, no "scan this" UI).
-5. **Phase 8/9 scripted evaluation hasn't started.** The engine that would generate labelled
-   outcomes for all five scenarios already works (verified manually for each of ALLOW/STEP_UP/
-   DENY/TERMINATE and the tamper-detection case) — what's missing is scripting them as repeatable,
-   automated runs and computing TAR/FAR/FRR/CES from the results.
+4. **Phase 8/9 results run against the mock ledger, not Fabric yet.** The scenarios and metrics are
+   complete and produce real numbers, but on `MockLedger`. Because the metric definitions are
+   ledger-agnostic, the identical `npm run sim` / `npm run evaluate` reproduce against the real
+   blockchain once the Ubuntu port lands — no scenario or metric changes needed.
 
 ### Security note
 

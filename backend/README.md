@@ -127,10 +127,11 @@ src/
     ├── logger.ts             Minimal structured logger
     └── asyncHandler.ts       Async route wrapper (Express 4 does not catch rejections)
 
-chaincode/                    Fabric smart contracts (Phase 5) — spec only, own package.json.
-                              NOT backend code: it runs on the Fabric peers, not this server.
-simulation/                   The 5 attack scenarios (Phase 8) — spec only
-evaluation/                   Metrics + CES (Phase 9) — spec only
+chaincode/                    Fabric smart contracts (Phase 5) — IdentityContract + AuditContract,
+                              own package.json + offline tests. NOT backend code: it runs on the
+                              Fabric peers, not this server. Deploy on the Ubuntu/Fabric step.
+simulation/                   The 5 attack scenarios (Phase 8) — built · npm run sim
+evaluation/                   Metrics + CES (Phase 9) — built · npm run evaluate
 ```
 
 > These three folders live under `backend/` at the client's request. ROADMAP.md Phase 2
@@ -138,9 +139,13 @@ evaluation/                   Metrics + CES (Phase 9) — spec only
 
 ## Next steps
 
-1. **Zero Trust engine (rest of Phase 6)** — signal extraction → `pdp` scoring → `pep`
-   enforcement on every request, writing each decision to the `LedgerService`. Needs no
-   blockchain: `MockLedger` already satisfies the interface.
-2. **TOTP step-up MFA** — triggered by the PDP's `STEP_UP` decision.
-3. **Fabric client (Phases 4–5)** — implement `FabricLedger` against the deployed chaincode,
-   then flip `LEDGER=fabric`. No other file changes.
+The Zero Trust engine (Phase 6), TOTP step-up MFA, the attack scenarios (Phase 8), the metrics +
+CES engine (Phase 9), and the chaincode source (Phase 5) are all done and tested against
+`MockLedger`. The only remaining work is the **Ubuntu/Fabric port**:
+
+1. **Fabric network (Phases 1 + 4)** — WSL2 + Docker + the Fabric 2.5 test-network (2 orgs, 1
+   channel), with a one-command start script.
+2. **Deploy the chaincode** (`chaincode/`) onto the running peers.
+3. **Fabric client (Phase 5 wiring)** — implement `FabricLedger` against the deployed chaincode
+   via `@hyperledger/fabric-gateway`, then flip `LEDGER=fabric`. No other file changes — every
+   layer above `LedgerService` (auth, PEP, audit verifier, simulation, metrics) runs unchanged.
