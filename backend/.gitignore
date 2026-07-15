@@ -2,3 +2,7 @@ node_modules/
 dist/
 .env
 *.log
+
+# Generated Phase 8/9 outputs (labelled runs + computed metrics)
+simulation/results/
+evaluation/results/

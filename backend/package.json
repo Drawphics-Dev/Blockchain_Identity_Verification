@@ -14,7 +14,9 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force && npm run db:seed",
     "db:studio": "prisma studio",
-    "test:e2e": "tsx tests/e2e.ts"
+    "test:e2e": "tsx tests/e2e.ts",
+    "sim": "tsx simulation/run.ts",
+    "evaluate": "tsx evaluation/run.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
