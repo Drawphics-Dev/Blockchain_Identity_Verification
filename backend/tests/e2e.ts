@@ -22,6 +22,8 @@ import { continuousMonitorIntervalMs, signalWeights, thresholds } from '../src/c
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3000'
 const PASSWORD = 'demo1234'
+/** The seeded ADMIN — the only account permitted to read the audit trail. */
+const ADMIN_STUDENT_ID = 'SU/IT/ADMIN/001'
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
@@ -143,7 +145,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
  */
 async function pickTestStudents(): Promise<string[]> {
   const students = await prisma.student.findMany({
-    where: { NOT: { studentId: 'SU/CS/2023/0187' } },
+    // role: STUDENT excludes staff — an ADMIN account would otherwise sort into this list and
+    // be driven as a test subject, which would both skew the run and hand a student-shaped test
+    // an administrator's privileges.
+    where: { role: 'STUDENT', NOT: { studentId: 'SU/CS/2023/0187' } },
     orderBy: { studentId: 'asc' },
     take: 3,
     select: { id: true, studentId: true },
@@ -359,11 +364,22 @@ async function main() {
   // ── 10. Tamper detection ──────────────────────────────────────────────────
   section('10. Tampering with the off-chain copy is detected (ROADMAP §5)')
 
+  // The audit trail is ADMIN-only, so the verifier is driven as staff from here on. Alice's
+  // student token is kept to prove the gate actually refuses her.
+  const adminLogin = await login(ADMIN_STUDENT_ID, LAPTOP)
+  const adminToken: string = adminLogin.body.token
+  check('the administrator can sign in', !!adminToken, `login returned ${adminLogin.status}`)
+
   const victim = await prisma.auditMirror.findFirst({ orderBy: { createdAt: 'desc' } })
   if (!victim) {
     check('an audit-mirror row exists to tamper with', false)
   } else {
-    const clean = await call(`/api/admin/audit/verify/${victim.eventId}`, LAPTOP, { token: aliceToken2 })
+    const asStudent = await call(`/api/admin/audit/verify/${victim.eventId}`, LAPTOP, { token: aliceToken2 })
+    check('a student is refused the audit trail',
+      asStudent.status === 403,
+      `got ${asStudent.status} — the trail names every student, so it must be staff-only`)
+
+    const clean = await call(`/api/admin/audit/verify/${victim.eventId}`, LAPTOP, { token: adminToken })
     check('an untampered record verifies as valid', clean.body.valid === true)
 
     const original = victim.riskScore
@@ -371,7 +387,7 @@ async function main() {
       where: { eventId: victim.eventId },
       data: { riskScore: original === 0 ? 99 : 0, decision: 'ALLOW' },
     })
-    const tampered = await call(`/api/admin/audit/verify/${victim.eventId}`, LAPTOP, { token: aliceToken2 })
+    const tampered = await call(`/api/admin/audit/verify/${victim.eventId}`, LAPTOP, { token: adminToken })
     check('the tampered record is flagged',
       tampered.body.valid === false,
       `verifier returned valid=${tampered.body.valid} — it must catch the mismatch against the ledger`)

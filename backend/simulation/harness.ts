@@ -26,6 +26,8 @@ export const PASSWORD = 'demo1234'
 /** The hand-authored hero student — excluded from the synthetic pool so the simulation never
  * disturbs the account you click around as in the portal. */
 export const HERO_STUDENT_ID = 'SU/CS/2023/0187'
+/** The seeded ADMIN — the only account the audit trail and its verifier will answer to. */
+export const ADMIN_STUDENT_ID = 'SU/IT/ADMIN/001'
 
 export const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
@@ -143,7 +145,9 @@ export function sessionIdOf(token: string): string {
  */
 export async function pickStudents(count: number): Promise<string[]> {
   const students = await prisma.student.findMany({
-    where: { NOT: { studentId: HERO_STUDENT_ID } },
+    // role: STUDENT keeps staff out of the subject pool — an ADMIN account sorting in here would
+    // be driven as if it were a student, and its privileges would distort the labelled outcomes.
+    where: { role: 'STUDENT', NOT: { studentId: HERO_STUDENT_ID } },
     orderBy: { studentId: 'asc' },
     take: count,
     select: { studentId: true },

@@ -10,6 +10,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth } from '../auth/requireAuth'
+import { requireStudent } from '../auth/requireStudent'
 import { asyncHandler } from '../utils/asyncHandler'
 import { pep } from '../zerotrust/pep.middleware'
 import {
@@ -24,7 +25,12 @@ import {
 
 export const portalRouter = Router()
 
+// Authenticate, then confirm the caller is a student, then score the request. requireStudent
+// runs before the PEP so staff are turned away on identity rather than on risk — a 403 here
+// means "wrong kind of account", not "suspicious request", and the two must not be conflated
+// in the audit trail.
 portalRouter.use(requireAuth)
+portalRouter.use(asyncHandler(requireStudent))
 portalRouter.use(asyncHandler(pep))
 
 portalRouter.get(

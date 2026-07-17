@@ -49,12 +49,14 @@ export function Login() {
       return
     }
     if (res.stepUpRequired) setStep('mfa')
-    else navigate('/dashboard')
+    // '/' resolves by role (HomeRedirect) — staff land on the audit trail, students on the
+    // dashboard. Hardcoding '/dashboard' here would bounce an administrator straight back out.
+    else navigate('/')
   }
 
   function handleMfaVerified() {
     confirmMfaVerified()
-    navigate('/dashboard')
+    navigate('/')
   }
 
   function handleBack() {

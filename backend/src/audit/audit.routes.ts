@@ -3,6 +3,8 @@
  * Phase 7 frontend: "Admin/Research view: audit-trail viewer, Verify Integrity button,
  * live metrics").
  *
+ * ADMIN-ONLY — every route here is behind requireAuth + requireAdmin (Student.role = ADMIN).
+ *
  * GET /audit — the immutable on-chain audit trail (optionally scoped to one student by
  * matriculation number), newest first, enriched with the student's name for display.
  * GET /audit/verify/:eventId — the tamper check described in ROADMAP §5: recompute the
@@ -21,12 +23,16 @@ import type { Decision } from '../types'
 import { prisma } from '../db/prisma'
 import { ledger } from '../ledger'
 import { hashEvent } from '../ledger/hashEvent'
+import { requireAdmin } from '../auth/requireAdmin'
 import { requireAuth } from '../auth/requireAuth'
 import { asyncHandler } from '../utils/asyncHandler'
 
 export const auditRouter = Router()
 
+// Order matters: authenticate, then authorize. Every route below is admin-only — the trail
+// names every student and every decision made about them.
 auditRouter.use(requireAuth)
+auditRouter.use(requireAdmin)
 
 /** Cap the trail response — the mock ledger has no server-side pagination. */
 const TRAIL_LIMIT = 200

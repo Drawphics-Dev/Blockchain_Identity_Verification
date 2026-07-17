@@ -34,6 +34,8 @@ const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })
 const prisma = new PrismaClient({ adapter })
 
 const DEMO_PASSWORD = 'demo1234'
+/** The one seeded ADMIN. Staff read the audit trail; they have no enrollments, fees or results. */
+const ADMIN_ID = 'SU/IT/ADMIN/001'
 const SEMESTER = 'Semester 1'
 const FEE_SEMESTER = 'Semester 1 · 2025/2026'
 /** Mirrors portal.service.ts's MAX_CREDITS — kept independent since this script doesn't
@@ -384,9 +386,33 @@ async function main() {
     ),
   )
 
+  // ---- The administrator ----
+  //
+  // University IT staff, not a student: no enrollments, fees or results hang off this account.
+  // It exists to own the one privilege the prototype has — reading the audit trail — so that
+  // the Admin/Research view can be demonstrated as restricted rather than open to everyone.
+  const adminEnrollmentToken = issueEnrollmentToken()
+  const admin = await prisma.student.create({
+    data: {
+      studentId: ADMIN_ID,
+      fullName: 'Kwame Mensah',
+      email: 'kwame.mensah@stateuniversity.edu',
+      program: 'University IT — Security Operations',
+      level: 'Staff',
+      role: 'ADMIN',
+      passwordHash: await bcrypt.hash(DEMO_PASSWORD, 10),
+      totpSecret: generateSecret(),
+      enrollmentToken: adminEnrollmentToken,
+    },
+  })
+
   console.log(
     `Seeded: ${1 + roster.length} students (hero: ${hero.studentId} / ${DEMO_PASSWORD} — every ` +
       `synthetic student shares this password), ${courses.length} courses.`,
+  )
+  console.log(
+    `        1 administrator (${admin.studentId} / ${DEMO_PASSWORD}) — the only account that ` +
+      `may read the audit trail.`,
   )
   console.log('')
   console.log('  Enrollment token for the demo student — this is what the registrar would hand')

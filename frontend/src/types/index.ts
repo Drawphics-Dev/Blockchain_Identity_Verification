@@ -1,5 +1,7 @@
 /** Shared domain types for the student portal. */
 
+export type Role = 'STUDENT' | 'ADMIN'
+
 export interface Student {
   id: string
   studentId: string
@@ -7,6 +9,9 @@ export interface Student {
   email: string
   program: string
   level: string
+  /** ADMIN may read the audit trail; STUDENT may not. Hides the Research View — it is not the
+   * security boundary itself, which is requireAdmin on the server. */
+  role: Role
   avatarUrl?: string
   gpa: number
   enrolledCredits: number

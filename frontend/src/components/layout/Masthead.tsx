@@ -6,17 +6,24 @@ import { useAuth } from '@/context/AuthContext'
 import { Crest } from '@/components/ui/Crest'
 import { cn } from '@/lib/utils'
 
-const nav = [
+/**
+ * The two roles get disjoint navigation, not a shared portal with one extra tab. A security
+ * administrator has no GPA, no courses and no fees, so every student link would render an empty
+ * shell for them; a student must never see the audit trail at all.
+ */
+const studentNav = [
   { to: '/dashboard', label: 'Overview' },
   { to: '/courses', label: 'Course Registration' },
   { to: '/fees', label: 'Fee Statement' },
   { to: '/results', label: 'Examination Results' },
-  { to: '/admin', label: 'Research View' },
 ]
+
+const adminNav = [{ to: '/admin', label: 'Audit Trail' }]
 
 export function Masthead() {
   const { student, logout } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
+  const links = student?.role === 'ADMIN' ? adminNav : studentNav
 
   return (
     <header className="sticky top-0 z-30">
@@ -70,7 +77,7 @@ export function Masthead() {
         <div className="mx-auto max-w-6xl px-5 lg:px-8">
           {/* Desktop nav */}
           <nav className="hidden items-center gap-8 lg:flex">
-            {nav.map(({ to, label }) => (
+            {links.map(({ to, label }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -91,7 +98,7 @@ export function Masthead() {
           {/* Mobile nav (collapsible) */}
           {menuOpen && (
             <nav className="flex flex-col py-2 lg:hidden">
-              {nav.map(({ to, label }) => (
+              {links.map(({ to, label }) => (
                 <NavLink
                   key={to}
                   to={to}

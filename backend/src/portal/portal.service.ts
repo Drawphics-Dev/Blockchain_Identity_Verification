@@ -56,6 +56,9 @@ export async function getStudentProfile(studentId: string) {
     email: student.email,
     program: student.program,
     level: student.level,
+    // Drives the UI only — it hides the Research View from students. The actual gate is
+    // requireAdmin on the server; a client that ignores this field still gets a 403.
+    role: student.role,
     gpa: cumulativeGpa(student.results),
     enrolledCredits: student.enrollments.reduce((sum, e) => sum + e.course.credits, 0),
     trustScore: await currentTrustScore(student.id),

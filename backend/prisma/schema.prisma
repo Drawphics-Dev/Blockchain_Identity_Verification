@@ -13,6 +13,13 @@ datasource db {
   provider = "postgresql"
 }
 
+/// Who may read the audit trail. Deliberately coarse — this prototype needs exactly one
+/// privilege boundary (ROADMAP §7 Admin/Research view), not a general RBAC system.
+enum Role {
+  STUDENT
+  ADMIN
+}
+
 model Student {
   id           String  @id @default(cuid())
   /// The human-facing matriculation number, e.g. "SU/CS/2023/0187". Used to log in.
@@ -21,6 +28,13 @@ model Student {
   email        String  @unique
   program      String
   level        String
+  /// STUDENT for real students; ADMIN for university IT / registrar staff, who alone may read
+  /// the audit trail. Defaults to STUDENT so a new account is never accidentally privileged.
+  ///
+  /// Staff live in this table rather than one of their own because every part of the auth stack
+  /// — Session, the JWT `sub`, TOTP enrollment, the Zero Trust PEP — is keyed to Student.id. A
+  /// separate Admin model would fork all of it for one boolean's worth of difference.
+  role         Role    @default(STUDENT)
   /// bcrypt hash. The raw password is never stored (ROADMAP §5).
   passwordHash  String
   /// TOTP base32 secret, issued with the account. Never leaves the server after enrollment.

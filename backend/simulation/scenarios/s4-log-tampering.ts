@@ -14,7 +14,9 @@ import { emptyOutput, type ScenarioOutput } from '../types'
 export async function run(operatorStudentId: string, count: number): Promise<ScenarioOutput> {
   const out = emptyOutput()
 
-  // Any authenticated session can call the verifier (it is behind requireAuth, not the PEP).
+  // The operator must be an ADMIN: the verifier sits behind requireAdmin, so a student token
+  // gets a 403 and every tampering attempt would score as undetected — turning an authorization
+  // change into a phantom collapse of the audit-integrity metric (§7d).
   await prepareEnrolledKnownDevice(operatorStudentId, HOME_LAPTOP)
   const auth = await login(operatorStudentId, HOME_LAPTOP)
   const token: string | undefined = auth.body?.token

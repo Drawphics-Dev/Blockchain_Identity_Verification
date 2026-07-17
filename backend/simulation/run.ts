@@ -13,7 +13,7 @@
 import 'dotenv/config'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { BASE_URL, pickStudents, prisma, tagSimulatedEvents } from './harness'
+import { ADMIN_STUDENT_ID, BASE_URL, pickStudents, prisma, tagSimulatedEvents } from './harness'
 import { emptyOutput, type SimulationConfig, type SimulationReport } from './types'
 import { run as genuineLogin } from './scenarios/s1-genuine-login'
 import { run as invalidCredential } from './scenarios/s2-invalid-credential'
@@ -61,12 +61,14 @@ async function main(): Promise<void> {
 
   // Allocate disjoint synthetic students so scenarios never contend for the same account.
   const GENUINE = 3
-  const needed = GENUINE + 1 /* theft victim */ + 1 /* s4 operator */ + config.abnormalSessions
+  const needed = GENUINE + 1 /* theft victim */ + config.abnormalSessions
   const pool = await pickStudents(needed)
   const genuineStudents = pool.slice(0, GENUINE)
   const theftVictim = pool[GENUINE]
-  const operator = pool[GENUINE + 1]
-  const abnormalVictims = pool.slice(GENUINE + 2, GENUINE + 2 + config.abnormalSessions)
+  // Scenario 4 drives the audit verifier, which is ADMIN-only — so its operator comes from
+  // staff rather than the student pool.
+  const operator = ADMIN_STUDENT_ID
+  const abnormalVictims = pool.slice(GENUINE + 1, GENUINE + 1 + config.abnormalSessions)
 
   const report: SimulationReport = {
     startedAt,
