@@ -6,6 +6,7 @@ import { env } from './config/env'
 import { authRouter } from './auth/auth.routes'
 import { portalRouter } from './portal/portal.routes'
 import { auditRouter } from './audit/audit.routes'
+import { isLedgerUnavailable } from './ledger/errors'
 import { openapiSpec } from './docs/openapi'
 import { logger } from './utils/logger'
 
@@ -47,7 +48,23 @@ export function createApp() {
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }))
 
   // Anything that escapes a route handler ends up here rather than hanging the request.
+  // NOTE: only routes wrapped in asyncHandler reach this — Express 4 does not forward a
+  // rejected promise from a bare `async` handler, it becomes an unhandled rejection and
+  // Node exits. Every async route must be wrapped.
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    // A ledger outage is not a bug in this request — it is the blockchain being unreachable,
+    // which is temporary and retryable. 503 says "come back", 500 says "we are broken";
+    // conflating them would have an operator hunting a phantom application fault while the
+    // real problem is a stopped peer.
+    if (isLedgerUnavailable(err)) {
+      logger.error('Ledger unavailable', { message: err.message })
+      res.status(503).json({
+        error: 'ledger_unavailable',
+        message: 'Identity verification is temporarily unavailable. Please try again shortly.',
+      })
+      return
+    }
+
     logger.error('Unhandled error', { message: err.message, stack: err.stack })
     res.status(500).json({ error: 'internal_error', message: 'Something went wrong.' })
   })

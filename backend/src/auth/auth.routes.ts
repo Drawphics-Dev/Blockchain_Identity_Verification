@@ -18,6 +18,7 @@ import { buildLoginSignals } from '../zerotrust/signals'
 import { recordDecision } from '../zerotrust/recordDecision'
 import { computeFingerprint } from '../zerotrust/fingerprint'
 import { computeCredentialHash, verifyIdentityAnchor } from '../zerotrust/identity'
+import { asyncHandler } from '../utils/asyncHandler'
 import { logger } from '../utils/logger'
 import { mfaOtpAuthUrl, mfaQrDataUrl, verifyMfaCode } from './mfa'
 import { signToken } from './jwt'
@@ -69,7 +70,7 @@ async function registerKnownContext(
   ])
 }
 
-authRouter.post('/login', async (req, res) => {
+authRouter.post('/login', asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
     res
@@ -199,25 +200,25 @@ authRouter.post('/login', async (req, res) => {
     /** False => the client must run enrollment (QR) rather than ask for a code. */
     mfaEnrolled: student.mfaEnrolledAt !== null,
   })
-})
+}))
 
-authRouter.post('/logout', requireAuth, async (req, res) => {
+authRouter.post('/logout', requireAuth, asyncHandler(async (req, res) => {
   // Revoke the session row, so the token is dead even though it has not expired.
   await prisma.session.update({
     where: { id: req.auth!.sessionId },
     data: { revokedAt: new Date(), revokedBy: 'LOGOUT' },
   })
   res.json({ ok: true })
-})
+}))
 
-authRouter.get('/me', requireAuth, async (req, res) => {
+authRouter.get('/me', requireAuth, asyncHandler(async (req, res) => {
   const student = await getStudentProfile(req.auth!.studentId)
   if (!student) {
     res.status(404).json({ error: 'not_found', message: 'Student no longer exists.' })
     return
   }
   res.json({ student })
-})
+}))
 
 const codeSchema = z.object({ code: z.string().trim().min(6).max(8) })
 
@@ -256,7 +257,7 @@ async function completeStepUp(req: Request): Promise<Date> {
  *      had not got around to setting up, and MFA would stop nothing. A correct password is
  *      explicitly NOT sufficient to enroll; that is the point.
  */
-authRouter.get('/mfa/enroll', requireAuth, async (req, res) => {
+authRouter.get('/mfa/enroll', requireAuth, asyncHandler(async (req, res) => {
   const token = typeof req.query.token === 'string' ? req.query.token.trim().toUpperCase() : ''
 
   const student = await prisma.student.findUnique({ where: { id: req.auth!.studentId } })
@@ -284,7 +285,7 @@ authRouter.get('/mfa/enroll', requireAuth, async (req, res) => {
     otpauthUrl: mfaOtpAuthUrl(student.studentId, student.totpSecret),
     qrDataUrl: await mfaQrDataUrl(student.studentId, student.totpSecret),
   })
-})
+}))
 
 const enrollSchema = codeSchema.extend({ token: z.string().trim().min(1) })
 
@@ -296,7 +297,7 @@ const enrollSchema = codeSchema.extend({ token: z.string().trim().min(1) })
  * It doubles as the step-up answer, so a first-time student enters one code, not two — and the
  * token is consumed, making it good for exactly one enrollment.
  */
-authRouter.post('/mfa/enroll', requireAuth, async (req, res) => {
+authRouter.post('/mfa/enroll', requireAuth, asyncHandler(async (req, res) => {
   const parsed = enrollSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({
@@ -339,14 +340,14 @@ authRouter.post('/mfa/enroll', requireAuth, async (req, res) => {
   const mfaVerifiedAt = await completeStepUp(req)
 
   res.json({ ok: true, validUntil: new Date(mfaVerifiedAt.getTime() + stepUpValidityMs).toISOString() })
-})
+}))
 
 /**
  * Completes a STEP_UP challenge raised by the PDP (at login, or on a protected route).
  * On success the session is verified for `stepUpValidityMs`, so the PEP downgrades matching
  * STEP_UP decisions to ALLOW until that lapses.
  */
-authRouter.post('/step-up', requireAuth, async (req, res) => {
+authRouter.post('/step-up', requireAuth, asyncHandler(async (req, res) => {
   const parsed = codeSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'invalid_request', message: 'A TOTP code is required.' })
@@ -379,4 +380,4 @@ authRouter.post('/step-up', requireAuth, async (req, res) => {
 
   const mfaVerifiedAt = await completeStepUp(req)
   res.json({ ok: true, validUntil: new Date(mfaVerifiedAt.getTime() + stepUpValidityMs).toISOString() })
-})
+}))
