@@ -17,6 +17,7 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '@prisma/client'
 import { generate } from 'otplib'
 import { hashEvent } from '../src/ledger/hashEvent'
+import { env } from '../src/config/env'
 import { continuousMonitorIntervalMs, signalWeights, thresholds } from '../src/config/policy.config'
 
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3000'
@@ -386,6 +387,21 @@ async function main() {
   // ── 11. On-chain revocation beats a correct password ──────────────────────
   section('11. A revoked identity cannot log in, even with the right password')
 
+  // MOCK-ONLY, deliberately. This section reaches past LedgerService into MockLedger's own
+  // table, because it needs two things the real ledger does not offer:
+  //   - to revoke without the app having a revoke route, and
+  //   - to DELETE the anchor afterwards so the run repeats (line below).
+  // An append-only ledger has no delete and no un-revoke — re-registering preserves `revoked`
+  // by design — so running this under LEDGER=fabric would permanently revoke `mallory` and
+  // break the credential-stealing scenario above on the next run. The Fabric equivalent lives
+  // in tests/fabric-check.ts, which asserts the same property against the chaincode.
+  if (env.ledger === 'fabric') {
+    console.log('  SKIP  mock-only section (see tests/fabric-check.ts for the Fabric equivalent)')
+  } else {
+    await revocationChecks()
+  }
+
+  async function revocationChecks(): Promise<void> {
   await login(mallory, LAPTOP) // anchors the identity
   const anchor = await prisma.ledgerIdentity.findUnique({ where: { studentId: mallory } })
   check('an identity anchor was written on first login', !!anchor)
@@ -397,6 +413,7 @@ async function main() {
     `got status=${revoked.status} error=${revoked.body.error} — this is the property bcrypt alone cannot give`)
 
   await prisma.ledgerIdentity.delete({ where: { studentId: mallory } }) // leave it re-runnable
+  }
 
   // ── 12. Continuous verification: mid-session termination ──────────────────
   section('12. Continuous verification terminates a hijacked session (ROADMAP §4.3)')

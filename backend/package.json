@@ -15,10 +15,13 @@
     "db:reset": "prisma migrate reset --force && npm run db:seed",
     "db:studio": "prisma studio",
     "test:e2e": "tsx tests/e2e.ts",
+    "test:fabric": "tsx tests/fabric-check.ts",
     "sim": "tsx simulation/run.ts",
     "evaluate": "tsx evaluation/run.ts"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@hyperledger/fabric-gateway": "^1.11.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@types/qrcode": "^1.5.6",

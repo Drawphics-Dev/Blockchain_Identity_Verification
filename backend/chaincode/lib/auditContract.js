@@ -45,13 +45,27 @@ function requireArg(name, value) {
   }
 }
 
-/** Drain a state iterator into an array of parsed JSON values (each stored value is a Buffer). */
+/**
+ * Drain a state iterator into an array of stored values (each is a Buffer).
+ *
+ * Deliberately steps the iterator by hand rather than using `for await`. fabric-shim attaches
+ * Symbol.asyncIterator to the *promise* getStateByPartialCompositeKey returns, not to the
+ * iterator it resolves to — so `for await (const r of await stub.getStateBy...())` throws
+ * "iterator is not async iterable" on a real peer. next()/close() exist on the resolved
+ * iterator itself and behave identically under the test stub, so this works in both.
+ */
 async function collect(iterator) {
   const out = []
-  for await (const res of iterator) {
-    if (res.value && res.value.length) out.push(res.value.toString())
+  try {
+    let res = await iterator.next()
+    while (!res.done) {
+      const kv = res.value
+      if (kv && kv.value && kv.value.length) out.push(kv.value.toString())
+      res = await iterator.next()
+    }
+  } finally {
+    await iterator.close()
   }
-  await iterator.close()
   return out
 }
 

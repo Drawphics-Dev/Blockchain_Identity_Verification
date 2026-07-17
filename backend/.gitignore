@@ -3,6 +3,10 @@ dist/
 .env
 *.log
 
+# Fabric identity material (certs + private keys) copied from the test-network's
+# generated crypto config. Environment-specific and secret — never commit it.
+fabric-network/
+
 # Generated Phase 8/9 outputs (labelled runs + computed metrics)
 simulation/results/
 evaluation/results/
