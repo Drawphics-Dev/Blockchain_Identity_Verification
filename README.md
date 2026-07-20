@@ -1,21 +1,11 @@
 # Blockchain-Enhanced Identity Verification for Zero Trust Access Control in University Student Portals
 
-A research prototype: a university student portal secured by a Zero Trust access model, with
-identity anchoring and an immutable audit trail on a permissioned Hyperledger Fabric blockchain.
+A university student portal secured by a Zero Trust access model, with identity anchoring and an
+immutable audit trail on a permissioned Hyperledger Fabric blockchain.
 
-**Security challenges addressed:** credential compromise, data adulteration, lateral movement.
-
-> **Status: all nine roadmap phases are complete and running on a live Hyperledger Fabric 2.5
-> network.** Every login and every protected request is risk-scored against all seven signals the
-> roadmap specifies (device fingerprint, IP, geovelocity, time of day, behaviour rate + navigation
-> sequence, session age, resource sensitivity) and enforced — ALLOW / STEP_UP (TOTP MFA) / DENY /
-> TERMINATE. A background monitor can end a session with no new request. Every decision is written
-> to the blockchain and mirrored to PostgreSQL, with tamper detection proven against real altered
-> records. Six attack scenarios and the metrics + CES engine complete the evaluation.
->
-> **One item needs the client:** ROADMAP §7 Table 1 gives "Authentication Performance" a 10% weight
-> but never defines it. It is scored against published HCI thresholds and flagged provisional; CES
-> is reported both with and without it. See [Current status](#current-status).
+**This README is the guide to running the system on your own machine.** For what the system does,
+how it is built, and its phase-by-phase status, see [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) and
+[ROADMAP.md](ROADMAP.md).
 
 ## Quick start
 
@@ -47,20 +37,6 @@ Full setup, tests and troubleshooting: [Running it](#running-it).
 | [REQUIREMENTS.md](REQUIREMENTS.md) | The original client brief, verbatim. |
 | [ROADMAP.md](ROADMAP.md) | **The authoritative build plan (client-approved, 2026-07-10).** 9 phases, Fabric-first. |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | Earlier internal plan. Superseded by ROADMAP.md wherever the two disagree. |
-
-## Current status
-
-| Phase | Status | What actually exists |
-|---|---|---|
-| 1 — Environment setup | ✅ Done | WSL2 + Docker + the Fabric 2.5 toolchain. PostgreSQL is now containerised (`docker-compose.yml`), so no local install is required. |
-| 2 — Scaffold + ledger interface | ✅ Done | `LedgerService` interface (8 methods) with two implementations behind it: `FabricLedger` (live) and a hash-chained `MockLedger` for development without a blockchain. |
-| 3 — PostgreSQL | ✅ Done | Schema extended with `RiskEvent`, `AuditMirror`, `Device`, `KnownNetwork` for the engine. Seed produces **30 students** (1 hand-authored + 29 generated) plus 1 administrator. |
-| 4 — Fabric network | ✅ **Done** | 2 orgs (University IT, Registrar), 1 channel, orderer, CA-issued identities. `scripts/fabric-up.sh` starts the network, deploys the chaincode and copies the gateway credentials in one command. |
-| 5 — Chaincode | ✅ **Done** | `backend/chaincode/` — `IdentityContract` + `AuditContract`, append-only and hash-chained, **deployed to both org peers and endorsed by both**. `hashEvent.js` is kept byte-identical to the backend's; 26-check offline suite (`npm test`) plus 22 live ledger checks (`npm run test:fabric`). |
-| 6 — Backend + Zero Trust engine | ✅ **Done** | PDP risk engine implementing **all seven** ROADMAP §4.1 signals (incl. geovelocity and navigation-sequence), PEP middleware on every protected route, TOTP step-up MFA, an on-chain identity-anchor check at login (independent of the password — enables real revocation), a continuous background monitor, the audit integrity verifier, and an admin-only on-chain identity revocation endpoint. All tested live, not just typechecked. |
-| 7 — React portal | ✅ **Done** | Login **with MFA built into the sign-in flow itself** (two-step: password, then TOTP only if the engine flags the device/network — no jarring dialog after the fact), Dashboard, Course Registration, Fee Statement, Results, and the Admin/Research view (audit trail, Verify Integrity button, live metrics). Real per-request client telemetry (locale, timezone, screen, hardware concurrency) collected in the browser and folded into the device-fingerprint signal server-side. All tested live in a browser, not just typechecked. |
-| 8 — Attack scenarios | ✅ **Done** | `backend/simulation/` scripts **six** scenarios — the five the roadmap requires (genuine login, invalid credentials, credential theft, log tampering, abnormal behaviour) plus **lateral movement**, which §1 names as a security challenge but the original five never exercised. All drive the **real backend over HTTP** and emit labelled outcomes to a JSON report. Run with `npm run sim`. |
-| 9 — Metrics & evaluation | ✅ **Done** | `backend/evaluation/` computes TAR/FAR/FRR, attack resistance %, continuous validation, audit integrity, and the **CES** from Phase 8's labelled report, exporting JSON + CSV + a self-contained HTML dashboard, with sample sizes reported alongside every rate (ROADMAP §8). Run with `npm run evaluate`. Deployment packaging is `scripts/start.sh`. One caveat: "Authentication Performance" is undefined in the brief, so it is scored against published HCI thresholds, flagged *provisional*, and CES is reported both with and without it. |
 
 ## Repository structure
 
