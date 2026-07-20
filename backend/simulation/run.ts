@@ -20,6 +20,7 @@ import { run as invalidCredential } from './scenarios/s2-invalid-credential'
 import { run as credentialTheft } from './scenarios/s3-credential-theft'
 import { run as logTampering } from './scenarios/s4-log-tampering'
 import { run as abnormalBehaviour } from './scenarios/s5-abnormal-behaviour'
+import { run as lateralMovement } from './scenarios/s6-lateral-movement'
 
 const RESULTS_DIR = join(__dirname, 'results')
 
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
     credentialTheftAttempts: intEnv('SIM_THEFT', quick ? 3 : 8),
     tamperAttempts: intEnv('SIM_TAMPER', quick ? 3 : 6),
     abnormalSessions: intEnv('SIM_ABNORMAL', quick ? 1 : 2),
+    lateralMovementRounds: intEnv('SIM_LATERAL', quick ? 1 : 2),
   }
 
   // Fail fast with a clear message if the backend isn't up — every scenario needs it.
@@ -61,7 +63,8 @@ async function main(): Promise<void> {
 
   // Allocate disjoint synthetic students so scenarios never contend for the same account.
   const GENUINE = 3
-  const needed = GENUINE + 1 /* theft victim */ + config.abnormalSessions
+  const LATERAL = 2 // scenario 6 needs a disjoint attacker + victim pair
+  const needed = GENUINE + 1 /* theft victim */ + config.abnormalSessions + LATERAL
   const pool = await pickStudents(needed)
   const genuineStudents = pool.slice(0, GENUINE)
   const theftVictim = pool[GENUINE]
@@ -69,6 +72,7 @@ async function main(): Promise<void> {
   // staff rather than the student pool.
   const operator = ADMIN_STUDENT_ID
   const abnormalVictims = pool.slice(GENUINE + 1, GENUINE + 1 + config.abnormalSessions)
+  const [lateralAttacker, lateralVictim] = pool.slice(GENUINE + 1 + config.abnormalSessions)
 
   const report: SimulationReport = {
     startedAt,
@@ -99,13 +103,25 @@ async function main(): Promise<void> {
   console.log('▶ Scenario 4 — log tampering (integrity verifier flags mismatch)')
   merge(await logTampering(operator, config.tamperAttempts))
 
+  // Scenario 6 runs before 5 because 5 waits on real monitor ticks; ordering it earlier keeps
+  // the wall-clock cost of the run in one place rather than straddling it.
+  console.log('▶ Scenario 6 — lateral movement (foothold must not spread)')
+  merge(await lateralMovement(lateralAttacker, lateralVictim, config.lateralMovementRounds))
+
   console.log('▶ Scenario 5 — abnormal behaviour (mid-session TERMINATE) — this one waits on the monitor…')
   merge(await abnormalBehaviour(abnormalVictims))
 
   // Keep the live /metrics endpoint honest: mark this run's traffic as simulated. Best-effort —
   // a failure here must never discard the labelled report, which is the real deliverable.
   try {
-    const usedIds = [...genuineStudents, theftVictim, operator, ...abnormalVictims]
+    const usedIds = [
+      ...genuineStudents,
+      theftVictim,
+      operator,
+      ...abnormalVictims,
+      lateralAttacker,
+      lateralVictim,
+    ]
     const tagged = await tagSimulatedEvents(usedIds, runStart)
     report.notes.push(`Tagged ${tagged} RiskEvent row(s) as simulated (excluded from live /metrics).`)
   } catch (err) {

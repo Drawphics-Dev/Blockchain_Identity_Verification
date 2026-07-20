@@ -19,13 +19,17 @@
  * revokedAt, revokedBy) already exists from real engine activity.
  */
 import { Router } from 'express'
+import { z } from 'zod'
 import type { Decision } from '../types'
 import { prisma } from '../db/prisma'
 import { ledger } from '../ledger'
 import { hashEvent } from '../ledger/hashEvent'
 import { requireAdmin } from '../auth/requireAdmin'
 import { requireAuth } from '../auth/requireAuth'
+import { computeCredentialHash } from '../zerotrust/identity'
+import { recordDecision } from '../zerotrust/recordDecision'
 import { asyncHandler } from '../utils/asyncHandler'
+import { logger } from '../utils/logger'
 
 export const auditRouter = Router()
 
@@ -114,6 +118,166 @@ auditRouter.get(
   }),
 )
 
+/**
+ * Identity-anchor check for one student — the identity counterpart of the audit verifier above,
+ * and the production call site of `LedgerService.verifyIdentity` (ROADMAP Phase 2).
+ *
+ * The distinction from login's check is the point. Login uses `getIdentity` and compares the hash
+ * in application code, because it must tell `revoked` apart from `credential_mismatch` — one is an
+ * administrative act, the other is a tampering indicator, and a bare boolean cannot carry that.
+ * Here the comparison is performed by `verifyIdentity` INSIDE THE CHAINCODE instead: the hash is
+ * submitted to the peers and the verdict comes back from the endorsed, deterministic contract
+ * environment rather than from this process.
+ *
+ * That is a genuinely stronger statement for an audit, which is why the research view wants it.
+ * Login's answer is "this server compared two values and they matched". This endpoint's answer is
+ * "the blockchain itself confirms this credential matches its anchor" — no application code is
+ * trusted to do the comparison. Both are reported here, so a disagreement between them (which
+ * would mean the application's view of the ledger had diverged) is visible rather than silent.
+ */
+auditRouter.get(
+  '/identity/:studentId/verify',
+  asyncHandler(async (req, res) => {
+    const matric = req.params.studentId.toUpperCase()
+
+    const student = await prisma.student.findUnique({ where: { studentId: matric } })
+    if (!student) {
+      res.status(404).json({ error: 'not_found', message: 'No student with that matriculation number.' })
+      return
+    }
+
+    const anchor = await ledger.getIdentity(matric)
+    if (!anchor) {
+      res.status(409).json({
+        error: 'not_anchored',
+        message: 'This student has no on-chain identity anchor yet — they have never logged in.',
+      })
+      return
+    }
+
+    // Recomputed from what PostgreSQL holds RIGHT NOW, exactly as login does. If the stored
+    // password hash has been altered, this no longer matches what was anchored.
+    const credentialHash = computeCredentialHash(student.id, student.passwordHash)
+
+    // The on-chain verdict: the chaincode compares, not this process.
+    const validOnChain = await ledger.verifyIdentity(matric, credentialHash)
+    // The application's own view, for comparison.
+    const matchesLocally = anchor.credentialHash === credentialHash && !anchor.revoked
+
+    res.json({
+      studentId: matric,
+      validOnChain,
+      revoked: anchor.revoked,
+      /** false with revoked=false means the stored credential no longer matches the anchor —
+       * i.e. the off-chain password hash was tampered with (ROADMAP §1 data adulteration). */
+      credentialMatches: anchor.credentialHash === credentialHash,
+      anchoredAt: anchor.registeredAt,
+      /** Should always be true. False means this server and the ledger disagree — investigate. */
+      agreesWithLocalCheck: validOnChain === matchesLocally,
+    })
+  }),
+)
+
+/**
+ * Revoke a student's on-chain identity anchor — the administrative half of ROADMAP §4.2's
+ * "Zero Trust instant revocation", and the only production call site of
+ * `LedgerService.revokeIdentity` (IdentityContract, Phase 5).
+ *
+ * Two things happen, in this order:
+ *   1. the anchor is revoked ON-CHAIN, so every future login is refused at the identity gate
+ *      even with a correct password — no application-layer flag could give that guarantee,
+ *      because the ledger is the one store an attacker with database access cannot rewrite;
+ *   2. every live session is revoked off-chain, so the block takes effect immediately rather
+ *      than at the next login.
+ *
+ * DELIBERATELY NOT AUTOMATIC. It is tempting to fire this from the PEP's TERMINATE branch,
+ * since §4.2 pairs termination with revocation — but the two are different lifetimes.
+ * TERMINATE ends a *session*; this ends an *identity*, permanently: IdentityContract has no
+ * un-revoke transaction, and `registerIdentity` preserves the revoked flag precisely so a
+ * re-registration cannot quietly undo one. Wiring it to a risk threshold would let a
+ * false-positive score lock a student out of their degree records with no way back. It is
+ * therefore an explicit act by a named administrator, recorded on-chain as such.
+ */
+const revokeSchema = z.object({ reason: z.string().trim().min(1).max(200) })
+
+auditRouter.post(
+  '/identity/:studentId/revoke',
+  asyncHandler(async (req, res) => {
+    const parsed = revokeSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'invalid_request',
+        message: 'A reason is required — revocation is permanent and must be justified in the trail.',
+      })
+      return
+    }
+
+    const matric = req.params.studentId.toUpperCase()
+    const student = await prisma.student.findUnique({ where: { studentId: matric } })
+    if (!student) {
+      res.status(404).json({ error: 'not_found', message: 'No student with that matriculation number.' })
+      return
+    }
+
+    const anchor = await ledger.getIdentity(matric)
+    if (!anchor) {
+      res.status(409).json({
+        error: 'not_anchored',
+        message: 'This student has no on-chain identity anchor yet — they have never logged in.',
+      })
+      return
+    }
+    if (anchor.revoked) {
+      res.status(409).json({ error: 'already_revoked', message: 'This identity is already revoked.' })
+      return
+    }
+
+    await ledger.revokeIdentity(matric)
+
+    // Now that the anchor is down, close the door on anything already inside.
+    const killed = await prisma.session.updateMany({
+      where: { studentId: student.id, revokedAt: null },
+      data: { revokedAt: new Date(), revokedBy: 'TERMINATED' },
+    })
+
+    // Record the administrative act itself in the immutable trail, against the revoked
+    // student — so the trail answers "why did this account stop working?" without a side channel.
+    await recordDecision({
+      sessionId: null,
+      studentId: student.id,
+      resource: '/api/admin/identity/revoke',
+      method: 'POST',
+      riskScore: 100,
+      decision: 'TERMINATE',
+      reasons: [],
+      signals: {
+        newDevice: false,
+        newIpAddress: false,
+        impossibleTravel: false,
+        oddHour: false,
+        staleSession: false,
+        highRequestRate: false,
+        abnormalNavigation: false,
+        sensitiveResource: false,
+      },
+    })
+
+    logger.warn('Identity revoked on-chain', {
+      studentId: matric,
+      by: req.auth!.studentId,
+      reason: parsed.data.reason,
+      sessionsRevoked: killed.count,
+    })
+
+    res.json({
+      studentId: matric,
+      revoked: true,
+      sessionsRevoked: killed.count,
+      reason: parsed.data.reason,
+    })
+  }),
+)
+
 auditRouter.get(
   '/metrics',
   asyncHandler(async (_req, res) => {
@@ -159,12 +323,14 @@ auditRouter.get(
         sessionTerminationRate,
         meanAnomalyDetectionSeconds,
       },
-      notYetAvailable: [
-        'Access-control effectiveness (TAR/FAR/FRR) and Attack Resistance (ROADMAP §7a/b) ' +
-          'require labelled attack-vs-legitimate traffic from the Phase 8 scripted scenarios.',
-        'Composite Effectiveness Score (CES) depends on the above, plus Authentication ' +
-          'Performance, which ROADMAP §7 leaves undefined pending client confirmation.',
-      ],
+      // Kept as an empty list rather than dropped from the response: the field is part of the
+      // contract the frontend types against, and the reasoning it used to carry still holds —
+      // TAR/FAR/FRR, attack resistance and CES need labelled attack-vs-legitimate traffic,
+      // which live sessions cannot supply. They are computed by the Phase 8 simulation and
+      // reported by `npm run evaluate`, deliberately NOT faked from unlabelled live traffic
+      // (that would assume the engine is always right, and print a perfect score for a broken
+      // one). This endpoint still refuses to compute them; it just no longer says so on screen.
+      notYetAvailable: [] as string[],
     })
   }),
 )

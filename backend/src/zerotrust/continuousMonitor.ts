@@ -58,9 +58,11 @@ async function tick(): Promise<void> {
     const signals: RiskSignals = {
       newDevice: reasons.includes('newDevice'),
       newIpAddress: reasons.includes('newIpAddress'),
+      impossibleTravel: reasons.includes('impossibleTravel'),
       oddHour: reasons.includes('oddHour'),
       staleSession: reasons.includes('staleSession'),
       highRequestRate: reasons.includes('highRequestRate'),
+      abnormalNavigation: reasons.includes('abnormalNavigation'),
       sensitiveResource: reasons.includes('sensitiveResource'),
     }
 

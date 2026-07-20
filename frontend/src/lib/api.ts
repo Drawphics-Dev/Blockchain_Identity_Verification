@@ -34,12 +34,23 @@ export const setToken = (token: string) => localStorage.setItem(TOKEN_KEY, token
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY)
 
 /**
- * Called whenever the backend rejects our session — the token expired, or it was revoked
- * server-side (logout elsewhere, or a TERMINATE decision from the Zero Trust engine).
- * AuthContext registers a handler that drops the user back to the login screen.
+ * Why a session ended. The distinction is the whole point of continuous verification and must
+ * survive to the login screen: `terminated` means the Zero Trust engine actively killed the
+ * session mid-use (a TERMINATE decision, or an administrator revoking the identity on-chain),
+ * whereas `expired` is the ordinary case of a token running out or a logout elsewhere.
+ *
+ * Collapsing the two — which is what happens if you only look at the 401 status — makes the
+ * single most important moment in the demo indistinguishable from an idle timeout: the student
+ * is silently bounced to a blank login form with no idea the engine acted.
  */
-let onUnauthorized: (() => void) | null = null
-export function setUnauthorizedHandler(fn: () => void) {
+export type SessionEndReason = 'terminated' | 'expired'
+
+/**
+ * Called whenever the backend rejects our session. AuthContext registers a handler that drops
+ * the user back to the login screen and surfaces the reason there.
+ */
+let onUnauthorized: ((reason: SessionEndReason) => void) | null = null
+export function setUnauthorizedHandler(fn: (reason: SessionEndReason) => void) {
   onUnauthorized = fn
 }
 
@@ -89,10 +100,12 @@ async function request<T>(path: string, init: RequestInit = {}, isRetry = false)
       return request<T>(path, init, true)
     }
 
-    // 401 on anything other than the login attempt itself means the session is gone.
+    // 401 on anything other than the login attempt itself means the session is gone. The
+    // backend distinguishes an engine termination (`session_terminated`, pep.middleware.ts)
+    // from an ordinary expiry, so pass that through rather than flattening it.
     if (res.status === 401 && !path.startsWith('/api/auth/login')) {
       clearToken()
-      onUnauthorized?.()
+      onUnauthorized?.(body.error === 'session_terminated' ? 'terminated' : 'expired')
       sessionEndedListeners.forEach((fn) => fn())
     }
     throw new ApiError(

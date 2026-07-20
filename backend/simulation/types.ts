@@ -87,6 +87,8 @@ export interface SimulationConfig {
   credentialTheftAttempts: number
   tamperAttempts: number
   abnormalSessions: number
+  /** Rounds of lateral-movement probes; each round emits 8 labelled attempts (Scenario 6). */
+  lateralMovementRounds: number
 }
 
 /** What each scenario function returns; the orchestrator concatenates these into a report. */

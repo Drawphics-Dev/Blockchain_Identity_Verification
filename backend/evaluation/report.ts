@@ -38,12 +38,20 @@ export interface MetricsReport {
 export function buildReport(sim: SimulationReport): MetricsReport {
   const ces = computeCes(sim)
   const notes: string[] = [
-    'Confusion matrix (TAR/FAR/FRR) is computed from the access-control scenarios (1–3) only, ' +
-      'per the ROADMAP Phase 8 scenario→metric mapping.',
-    'Authentication Performance is PROVISIONAL: the brief (ROADMAP §7) leaves it undefined. It ' +
-      'is scored as 1 − meanLoginLatency/budget and MUST be confirmed with the client. Two CES ' +
-      'values are reported: one including this provisional component, one excluding it (its 10% ' +
-      'weight redistributed across the three defined components).',
+    'Confusion matrix (TAR/FAR/FRR) is computed from the access-control scenarios (1, 2, 3 and 6) ' +
+      'only, per the ROADMAP Phase 8 scenario→metric mapping. Scenario 6 (lateral movement) is ' +
+      'grouped with 2 and 3: all three are unauthorized attempts to reach protected data.',
+    `Sample sizes (ROADMAP §8 requires reporting counts alongside the rates): ${sim.trials.length} ` +
+      `labelled access trials — ${sim.trials.filter((t) => t.label === 'legitimate').length} legitimate, ` +
+      `${sim.trials.filter((t) => t.label === 'attack').length} attack; ` +
+      `${sim.tamperTrials.length} tampering attempts; ${sim.continuousTrials.length} risky sessions.`,
+    'Authentication Performance remains PROVISIONAL pending client confirmation: ROADMAP §7 Table 1 ' +
+      'assigns it 10% but never defines it alongside the other three components. It is scored ' +
+      'against published HCI response-time thresholds — full marks at or under 3000 ms (web ' +
+      'response threshold), zero at or above 10000 ms (Nielsen\'s limit of attention), linear ' +
+      'between. Both anchors are drawn from the literature rather than from the measured result. ' +
+      'Two CES values are reported: one including this component, one excluding it (its 10% weight ' +
+      'redistributed across the three defined components).',
   ]
   return {
     generatedAt: new Date().toISOString(),

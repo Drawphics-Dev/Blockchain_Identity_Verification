@@ -35,12 +35,23 @@ Outputs land in `evaluation/results/`:
     scenario lowers confidence rather than silently scoring 0.
 
 > **OPEN ITEM — "Authentication Performance" (10%) is undefined in the brief (ROADMAP §7).**
-> It is computed here on a transparent PROVISIONAL definition — `score = 1 −
-> meanLoginLatency/budget` (budget 1500 ms), with mean MFA-verify latency reported alongside —
-> and **must be confirmed with the client**. Two CES values are therefore reported: one
-> **including** the provisional component and one **excluding** it (its 10% redistributed across
-> the three defined components). The excluding value is the defensible headline until the client
-> confirms a definition; adjust `AUTH_PERF_BUDGET_MS` / the formula in `metrics.ts` once they do.
+> Table 1 assigns it a weight but, unlike the other three components, never gives a formula. It is
+> computed here on an explicit PROVISIONAL definition that **must be confirmed with the client**
+> (ROADMAP §7(e) records the full proposal):
+>
+> ```
+> meanLoginLatency ≤ AUTH_PERF_TARGET_MS  (3 000 ms) → 1.0
+> meanLoginLatency ≥ AUTH_PERF_CEILING_MS (10 000 ms) → 0.0
+> between                                             → linear
+> ```
+>
+> Both anchors come from published HCI response-time research (the 3 s web-response threshold and
+> Nielsen's 10 s *limit of attention*) and were fixed **before** the evaluation ran — they have not
+> been tuned to the result. Mean MFA-verify latency is reported alongside but not folded in.
+>
+> Two CES values are therefore reported: one **including** this component and one **excluding** it
+> (its 10% redistributed across the three defined components). Adjust `AUTH_PERF_TARGET_MS` /
+> `AUTH_PERF_CEILING_MS` in `metrics.ts` if — and only if — the client supplies different numbers.
 
 ## Layout
 

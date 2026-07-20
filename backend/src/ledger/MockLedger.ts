@@ -1,9 +1,21 @@
 /**
- * MockLedger — the stand-in for Hyperledger Fabric until Phases 4–5 exist.
+ * MockLedger — a PostgreSQL-backed implementation of LedgerService, for running the system
+ * without a blockchain.
  *
- * ⚠️ Not the approved deployment target. The final reported results come from
- * FabricLedger. This exists so the Zero Trust engine above it can be built, run and
- * evaluated on Windows before the Fabric test-network is stood up.
+ * ⚠️ NOT the deployment target and NOT the source of any reported result. The system runs on
+ * `LEDGER=fabric` (FabricLedger, live 2-org network) and every published figure was measured
+ * there. This exists so the portal and the Zero Trust engine can be developed and demonstrated
+ * on a machine with no Fabric network — `LEDGER=mock` starts in seconds rather than minutes.
+ *
+ * It also earns its place in the evaluation. Having two working implementations behind one
+ * interface is what turns ROADMAP Phase 2's claim — "the backend never depends on Fabric
+ * internals" — from an assertion into something demonstrable: the same engine, the same six
+ * scenarios and the same metrics code run unmodified on either, and the only figure that moves
+ * is latency. That comparison is precisely the cost-of-immutability finding in
+ * TECHNICAL_REPORT §9.2 (login 0.30 s off-chain vs 3.31 s on-chain).
+ *
+ * Its tables (LedgerIdentity, LedgerAuditRecord) are untouched under LEDGER=fabric; anything
+ * left in them is residue from earlier mock runs, not live state.
  *
  * It imitates the ledger's guarantees rather than merely pretending to:
  *
@@ -18,7 +30,8 @@
  *     breaks its own hash and every hash after it. This is what makes the tamper-detection
  *     metric (ROADMAP §5, §7d) real rather than asserted.
  *
- * When FabricLedger lands it implements this same interface and nothing above it changes.
+ * FabricLedger implements this same interface, and nothing above LedgerService differs between
+ * them — which is the property the two-implementation setup exists to prove.
  */
 import type { AccessEvent, AuditRecord, IdentityAnchor } from '../types'
 import { prisma } from '../db/prisma'

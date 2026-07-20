@@ -1,0 +1,21 @@
+{
+  // Typecheck-only config for the TypeScript that lives OUTSIDE src/.
+  //
+  // tsconfig.json deliberately scopes itself to `src/**/*` because that is what `npm run build`
+  // compiles into dist/. The consequence was that four directories of real, shipped TypeScript —
+  // the Phase 8 simulation, the Phase 9 evaluation engine, the test suites and the seed script —
+  // were never typechecked by anything. They are run through tsx, which strips types without
+  // checking them, so a type error there surfaced only as a crash mid-run (or not at all).
+  //
+  // `npm run typecheck` now runs both configs. Nothing here emits.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // The base sets rootDir/outDir for the build; neither applies to a check-only pass, and
+    // rootDir: "src" would reject every file below.
+    "rootDir": ".",
+    "outDir": null
+  },
+  "include": ["simulation/**/*.ts", "evaluation/**/*.ts", "tests/**/*.ts", "prisma/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -112,9 +112,11 @@ authRouter.post('/login', asyncHandler(async (req, res) => {
       signals: {
         newDevice: false,
         newIpAddress: false,
+        impossibleTravel: false,
         oddHour: false,
         staleSession: false,
         highRequestRate: false,
+        abnormalNavigation: false,
         sensitiveResource: false,
       },
     })
@@ -139,7 +141,7 @@ authRouter.post('/login', asyncHandler(async (req, res) => {
   const userAgent = req.get('user-agent') ?? null
   const deviceFingerprint = computeFingerprint(req)
 
-  const [knownDevice, knownNetwork] = await Promise.all([
+  const [knownDevice, knownNetwork, previousSession] = await Promise.all([
     prisma.device.findUnique({
       where: { studentId_fingerprint: { studentId: student.id, fingerprint: deviceFingerprint } },
     }),
@@ -148,14 +150,48 @@ authRouter.post('/login', asyncHandler(async (req, res) => {
           where: { studentId_ipAddress: { studentId: student.id, ipAddress } },
         })
       : null,
+    // The previous leg for the geovelocity check (ROADMAP §4.1 "impossible travel"): where this
+    // student last authenticated from, and when. Sessions are the right source rather than
+    // KnownNetwork — a network is only recorded once MFA has succeeded, so it would miss exactly
+    // the unverified logins this signal is meant to catch.
+    prisma.session.findFirst({
+      where: { studentId: student.id, ipAddress: { not: null } },
+      orderBy: { issuedAt: 'desc' },
+      select: { ipAddress: true, issuedAt: true },
+    }),
   ])
 
-  const loginSignals = buildLoginSignals({ isKnownDevice: !!knownDevice, isKnownNetwork: !!knownNetwork })
+  const loginSignals = buildLoginSignals({
+    isKnownDevice: !!knownDevice,
+    isKnownNetwork: !!knownNetwork,
+    previousLogin: previousSession ? { ip: previousSession.ipAddress, at: previousSession.issuedAt } : null,
+    currentIp: ipAddress,
+  })
   const { riskScore, decision, reasons } = evaluate(loginSignals)
 
   if (decision === 'DENY' || decision === 'TERMINATE') {
-    // Unreachable with the current login-signal weights (they cap below the DENY
-    // threshold), but the engine — not an assumption baked in here — is what decides.
+    // Reachable since geovelocity joined the login signals: impossibleTravel (35) + newDevice
+    // (30) + newIpAddress (20) = 85, which is TERMINATE. It was genuinely unreachable before
+    // that — the earlier weights capped below the DENY threshold — and the branch existed only
+    // so the engine, not an assumption baked in here, decided the outcome.
+    //
+    // The decision is written to the ledger BEFORE the response. ROADMAP §4.2 defines DENY as
+    // "block this request AND log it", and §2 step 4 writes every decision on-chain; a blocked
+    // login is the single most security-relevant event the system produces, so dropping it
+    // would leave the audit trail silent about exactly the moment it matters most. There is no
+    // session to attribute it to — the block happens before one is created — hence
+    // `sessionId: null`, which RiskEvent.sessionId is nullable for.
+    await recordDecision({
+      sessionId: null,
+      studentId: student.id,
+      resource: '/api/auth/login',
+      method: 'POST',
+      riskScore,
+      decision,
+      reasons,
+      signals: loginSignals,
+    })
+
     res
       .status(403)
       .json({ error: 'access_denied', message: 'Login blocked by the Zero Trust policy.', riskScore, reasons })

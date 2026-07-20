@@ -28,9 +28,26 @@ import type { RiskSignals } from '../types'
 export const signalWeights: Record<keyof RiskSignals, number> = {
   newDevice: 30,
   newIpAddress: 20,
+  /**
+   * The strongest single signal in the model, and the only one weighted above newDevice.
+   * A new device is *unusual*; impossible travel is *physically false* — the same account
+   * cannot be in London and Sydney four minutes apart, so one of the two sessions is
+   * definitionally not the student. 35 clears `allowBelow` alone (→ STEP_UP), and combined
+   * with newDevice reaches 65 (→ DENY), which is the correct outcome for a stolen credential
+   * replayed from another continent: challenge is too weak a response there.
+   */
+  impossibleTravel: 35,
   oddHour: 10,
   staleSession: 15,
   highRequestRate: 20,
+  /**
+   * Deliberately BELOW `allowBelow`, unlike the two above. Navigation breadth is a heuristic
+   * about how a person browses, and a genuine power user opening several pages quickly can
+   * trip it. It must therefore never demand MFA on its own — it earns its keep by compounding:
+   * with a sensitive resource (25) it is still a pass, but alongside a new device (45) or a
+   * high request rate (35) it pushes a sweep into STEP_UP, which is what enumeration deserves.
+   */
+  abnormalNavigation: 15,
   sensitiveResource: 10,
 }
 
@@ -56,6 +73,16 @@ if (signalWeights.newDevice < thresholds.allowBelow) {
   )
 }
 
+/** Same reasoning for impossible travel, which must also stand on its own: a physically
+ * impossible login that produced no challenge would be the clearest possible miss. */
+if (signalWeights.impossibleTravel < thresholds.allowBelow) {
+  throw new Error(
+    `Zero Trust policy misconfigured: signalWeights.impossibleTravel (${signalWeights.impossibleTravel}) ` +
+      `is below thresholds.allowBelow (${thresholds.allowBelow}), so a physically impossible login ` +
+      `would be ALLOWed whenever no other signal fires.`,
+  )
+}
+
 /** Local hours considered normal activity; outside this window raises the oddHour signal. */
 export const businessHours = { startHour: 6, endHour: 22 } as const
 
@@ -71,6 +98,25 @@ export const requestRateWindowMs = 10_000
  * same signal meant to catch actual rapid-fire/scripted access.
  */
 export const requestRateLimit = 30
+
+/**
+ * Fastest speed a person can plausibly travel, km/h. Above this, two logins cannot both be
+ * the same human being. 900 km/h is roughly commercial jet cruise — chosen as a physical
+ * upper bound rather than a tuned value, so it needs no recalibration per deployment and
+ * cannot be accused of being fitted to the results.
+ */
+export const maxTravelKmh = 900
+
+/** Sliding window for the navigation-breadth (abnormalNavigation) signal. */
+export const navigationWindowMs = 60_000
+/**
+ * More than this many DISTINCT resources inside the window is abnormal breadth. A dashboard
+ * load touches 4 (courses, enrollments, fees, results) and a student then navigating to two
+ * or three more pages stays comfortably under 8; a script probing for whatever it can reach
+ * blows past it. Set with the same headroom principle as requestRateLimit — normal use must
+ * not trip the signal meant to catch enumeration.
+ */
+export const navigationBreadthLimit = 8
 
 /** Which routes count as sensitive (ROADMAP §4.1) — matched against the request path. */
 export const sensitiveResourcePatterns = [/^\/api\/fees(\/|$)/, /^\/api\/results(\/|$)/]

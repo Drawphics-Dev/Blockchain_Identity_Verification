@@ -62,10 +62,22 @@ export interface Reply {
   ms: number
 }
 
+/**
+ * Client IPs the geovelocity signal can actually resolve (zerotrust/geo.ts). RFC 5737
+ * documentation ranges — they exist to stand in for real addresses and can never route.
+ *
+ * Needed because the app records `req.ip`, and every request from this harness originates on
+ * localhost, which `locate()` deliberately refuses to place. Without an explicit override the
+ * impossibleTravel signal could never fire in an evaluation run, which would leave it
+ * implemented but unmeasured.
+ */
+export const IP_LONDON = '192.0.2.10'
+export const IP_SYDNEY = '198.51.100.10'
+
 export async function call(
   path: string,
   device: Device,
-  opts: { method?: string; token?: string; body?: unknown } = {},
+  opts: { method?: string; token?: string; body?: unknown; ip?: string } = {},
 ): Promise<Reply> {
   const started = Date.now()
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -74,6 +86,9 @@ export async function call(
       'Content-Type': 'application/json',
       'User-Agent': device.userAgent,
       'X-Device-Telemetry': device.telemetry,
+      // The app sets `trust proxy`, so this becomes req.ip. Omitted by default, which leaves
+      // every existing scenario on localhost and behaving exactly as before.
+      ...(opts.ip ? { 'X-Forwarded-For': opts.ip } : {}),
       ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,

@@ -4,12 +4,19 @@
 > a request flows end-to-end. Written to be read top-to-bottom — it starts high-level and drills
 > into the code, with links to every source file.
 >
+> **Status: all nine roadmap phases complete, running on a live Hyperledger Fabric 2.5 network.**
+> Every figure in [§9.1](#91-measured-results) was measured against that network on 20 July 2026 —
+> 50 labelled trials across six attack scenarios — not estimated or carried over from an earlier
+> run. One component of the composite score awaits a client decision, and is reported both with and
+> without ([§13](#13-current-status--what-remains)).
+>
 > Diagrams use [Mermaid](https://mermaid.js.org/); they render on GitHub, in the VS Code Mermaid
 > extension, and in Claude Artifacts. If you see raw ```mermaid blocks, install a Mermaid viewer.
 
 **Contents**
 
 1. [What the system is](#1-what-the-system-is)
+   - 1.1 [Conceptual framework](#11-conceptual-framework)
 2. [Architecture at a glance](#2-architecture-at-a-glance)
 3. [Technology stack & repository layout](#3-technology-stack--repository-layout)
 4. [The core idea: the Zero Trust request lifecycle](#4-the-core-idea-the-zero-trust-request-lifecycle)
@@ -26,8 +33,10 @@
 7. [The chaincode (Phase 5)](#7-the-chaincode-phase-5)
 8. [The attack simulation (Phase 8)](#8-the-attack-simulation-phase-8)
 9. [The metrics & CES engine (Phase 9)](#9-the-metrics--ces-engine-phase-9)
+   - 9.1 [Measured results](#91-measured-results)
+   - 9.2 [Measured cost of immutability](#92-measured-cost-of-immutability)
 10. [The frontend](#10-the-frontend)
-11. [End-to-end traces](#11-end-to-end-traces)
+11. [End-to-end traces](#11-end-to-end-traces) — happy path · stolen password · lateral movement
 12. [How to run everything](#12-how-to-run-everything)
 13. [Current status & what remains](#13-current-status--what-remains)
 
@@ -49,11 +58,67 @@ The three security problems it targets (from the brief): **credential compromise
 passwords), **data adulteration** (tampering with stored records), and **lateral movement**
 (a hijacked session roaming the system).
 
-> **Important current caveat.** The real Fabric network is not running yet. The system runs behind
-> a **`LedgerService` interface** with a `MockLedger` implementation (backed by PostgreSQL tables
-> that *imitate* the ledger's guarantees). The real chaincode is written and tested but not deployed.
-> See [§13](#13-current-status--what-remains). Everywhere below, "the ledger" means "whatever
-> implements `LedgerService`" — today that's `MockLedger`; tomorrow it's `FabricLedger`.
+> **Ledger status.** The system runs on a **live Hyperledger Fabric 2.5 network** (`LEDGER=fabric`):
+> two organisations, one channel, both contracts deployed and endorsed by both peers. Everything
+> still sits behind the **`LedgerService` interface**, so the `MockLedger` implementation remains
+> available (`LEDGER=mock`) for development without a blockchain — it is a stand-in for the
+> interface, not the system of record. Everywhere below, "the ledger" means "whatever implements
+> `LedgerService`". See [§13](#13-current-status--what-remains).
+
+### 1.1 Conceptual framework
+
+How the two ideas combine to produce the measured outcomes. Read left to right: the threats
+determine which controls are needed, the controls are realised by the two architectural pillars,
+and each pillar produces the evidence one metric group is computed from.
+
+```mermaid
+flowchart LR
+  subgraph T["Threats (§1)"]
+    T1["Credential<br/>compromise"]
+    T2["Data<br/>adulteration"]
+    T3["Lateral<br/>movement"]
+  end
+
+  subgraph ZT["Pillar 1 — Zero Trust (NIST SP 800-207)"]
+    C1["Continuous verification<br/>PDP risk scoring on every request"]
+    C2["Step-up authentication<br/>TOTP on elevated risk"]
+    C3["Least privilege<br/>self-scoped data + RBAC"]
+  end
+
+  subgraph BC["Pillar 2 — Permissioned blockchain (Fabric)"]
+    C4["Identity anchoring<br/>IdentityContract"]
+    C5["Immutable audit trail<br/>AuditContract, hash-chained"]
+  end
+
+  subgraph M["Evaluation (§7)"]
+    M1["Access-control<br/>effectiveness<br/>TAR · FAR · FRR"]
+    M2["Attack<br/>resistance"]
+    M3["Continuous-validation<br/>effectiveness"]
+    M4["Audit<br/>integrity"]
+    M5(["Composite Effectiveness<br/>Score (CES)"])
+  end
+
+  T1 --> C1 & C2 & C4
+  T2 --> C4 & C5
+  T3 --> C1 & C3
+
+  C1 --> M1 & M3
+  C2 --> M1 & M2
+  C3 --> M2
+  C4 --> M1 & M2
+  C5 --> M4
+
+  M1 --> M5
+  M2 --> M5
+  M3 --> M5
+  M4 --> M5
+```
+
+The claim the framework encodes: **neither pillar is sufficient alone.** Zero Trust decides
+correctly but writes its decisions to storage an attacker with database access can rewrite; the
+blockchain makes records permanent but decides nothing. Anchoring identity on-chain is what lets
+the login gate detect a tampered credential hash, and hash-chaining the audit trail is what makes
+the effectiveness numbers themselves trustworthy.
 
 ---
 
@@ -103,7 +168,7 @@ sessions and can terminate one with no new request.
 
 | Layer | Technology |
 |---|---|
-| Blockchain | Hyperledger Fabric 2.5 (test-network) — *target; not yet running* |
+| Blockchain | Hyperledger Fabric 2.5 (test-network) — *live: 2 orgs, 1 channel, both contracts deployed* |
 | Smart contracts | Node.js chaincode (`fabric-contract-api`) |
 | Backend | Node.js + Express + TypeScript |
 | Database | PostgreSQL 16 (Prisma ORM) |
@@ -111,22 +176,33 @@ sessions and can terminate one with no new request.
 | Auth | JWT + TOTP MFA (bcrypt password hashing) |
 
 ```
+docker-compose.yml                PostgreSQL 16 container (published on 55432, not 5432)
+scripts/
+├── start.sh                      ONE-COMMAND STARTUP — the whole stack (Phase 9 packaging)
+├── stop.sh                       Tear down; --purge also deletes the database volume
+├── fabric-up.sh                  Fabric network + chaincode deploy + credential copy (Phase 4)
+├── fabric-down.sh                Tear down the network and remove stale credentials
+└── lib.sh                        Shared helpers (prerequisite checks, health waiting)
 backend/
 ├── src/
 │   ├── app.ts                    Express assembly: middleware, health, route mounting
 │   ├── index.ts                  Server entry point (starts the continuous monitor)
-│   ├── auth/                     Login, logout, MFA, JWT, requireAuth guard
-│   ├── zerotrust/                The Zero Trust engine: PDP, PEP, signals, monitor, identity
+│   ├── auth/                     Login, logout, MFA, JWT, requireAuth/requireAdmin guards
+│   ├── zerotrust/                The Zero Trust engine: PDP, PEP, signals, geo, monitor, identity
 │   ├── portal/                   Portal API: courses, enrollment, fees, results
-│   ├── audit/                    Admin/research routes: audit trail, verify, live metrics
-│   ├── ledger/                   LedgerService interface + MockLedger + FabricLedger + hashEvent
+│   ├── audit/                    Admin routes: audit trail, verify, metrics, identity revocation
+│   ├── ledger/                   LedgerService interface + FabricLedger + MockLedger + hashEvent
+│   ├── docs/openapi.ts           The OpenAPI document served at /docs and /openapi.json
 │   ├── config/                   env + policy.config (weights, thresholds — the tuning knobs)
 │   └── db/                       Prisma client
-├── prisma/                       schema.prisma, migrations, seed.ts (30 students)
+├── prisma/                       schema.prisma, migrations, seed.ts (30 students + 1 admin)
 ├── chaincode/                    Fabric smart contracts (Phase 5) — own package.json
-├── simulation/                   The 5 attack scenarios (Phase 8)
+├── simulation/                   The 6 attack scenarios (Phase 8)
 ├── evaluation/                   Metrics + CES engine (Phase 9)
-└── tests/e2e.ts                  End-to-end HTTP test of the whole engine
+├── tests/e2e.ts                  End-to-end HTTP test of the whole engine (37 checks)
+├── tests/fabric-check.ts         Ledger acceptance checks against the live network (22 checks)
+├── tsconfig.json                 Build config — scopes the compiler to src/
+└── tsconfig.tools.json           Typecheck-only config for simulation/, evaluation/, tests/, prisma/
 frontend/
 └── src/                          React portal (pages, components, context, api client)
 ```
@@ -134,6 +210,13 @@ frontend/
 > `chaincode/`, `simulation/`, and `evaluation/` live under `backend/` at the client's request
 > (the roadmap originally placed them at the repo root). `chaincode/` is **not** backend code — it
 > runs on the Fabric peers and keeps its own `package.json`.
+
+> **Why two tsconfigs.** `tsconfig.json` includes only `src/**`, because that is what `npm run
+> build` compiles into `dist/`. The side effect was that four directories of real, shipped
+> TypeScript — the simulation, the evaluation engine, the tests and the seed script — were checked
+> by nothing at all: they run through `tsx`, which strips types without verifying them, so a type
+> error there surfaced as a crash mid-run or not at all. `tsconfig.tools.json` closes that hole and
+> `npm run typecheck` now runs both. It caught a broken reference the moment it was introduced.
 
 ---
 
@@ -238,11 +321,22 @@ erDiagram
 Deliberately has **no foreign keys**, so the tampering scenario can edit it in place and the integrity
 verifier can catch the mismatch against the untamperable ledger copy.
 
-**Group 4 — the ledger stand-in** (`LedgerIdentity`, `LedgerAuditRecord`): what `MockLedger` writes to.
-These imitate on-chain state until Fabric exists. Nothing outside `src/ledger/` touches them.
+**Group 4 — the ledger stand-in** (`LedgerIdentity`, `LedgerAuditRecord`): what `MockLedger` writes
+to. **Unused under `LEDGER=fabric`** — real anchors and audit records live on the Fabric peers, and
+these tables retain only whatever earlier mock runs left behind. They exist so the system can run
+without a blockchain during development. Nothing outside `src/ledger/` touches them.
 
 The seed ([prisma/seed.ts](backend/prisma/seed.ts)) creates **30 students** (1 hand-authored "hero" +
-29 synthetic) with courses, fees, and results — meeting the Phase 8/9 population target.
+29 synthetic) plus **1 administrator**, with courses, fees, and results — meeting the Phase 8/9
+population target.
+
+> **Seeding is destructive, and on Fabric it is dangerous.** `seed.ts` regenerates every password
+> hash, and an identity anchor is a commitment to that hash. It clears the mock ledger's anchor table
+> to stay consistent — but on Fabric the anchors are **on-chain and cannot be deleted**, so re-seeding
+> leaves every stored hash disagreeing with its anchor and every login refused with
+> `identity_mismatch`: a permanent lockout that looks exactly like the tampering the system is
+> designed to detect. `scripts/start.sh` therefore seeds only an empty database when `LEDGER=fabric`,
+> and prompts before a forced re-seed.
 
 ---
 
@@ -259,10 +353,11 @@ flowchart TD
   PW -- yes --> ANCHOR{Identity anchor<br/>on ledger valid?}
   ANCHOR -- "revoked" --> R403a[403 identity_revoked]
   ANCHOR -- "hash mismatch" --> R403b[403 identity_mismatch<br/>possible tampering]
-  ANCHOR -- "ok / first-time" --> RISK[PDP scores the login<br/>known device? known network? odd hour?]
+  ANCHOR -- "ok / first-time" --> RISK[PDP scores the login<br/>known device? known network?<br/>impossible travel? odd hour?]
   RISK --> DEC{decision}
   DEC -- ALLOW --> OK1[Create session, whitelist device, issue JWT]
   DEC -- STEP_UP --> OK2[Create session with mfaRequired=true, issue JWT<br/>device NOT yet whitelisted]
+  DEC -- "DENY / TERMINATE" --> BLK[Write the decision on-chain<br/>then 403 access_denied<br/>no session created]
   OK1 --> DONE([200 + token + student])
   OK2 --> DONE
 ```
@@ -279,12 +374,26 @@ flowchart TD
      defence.* The anchor is `sha256(studentId + ":" + passwordHash)` (never the raw credential).
    - First-ever login **anchors** the student (enrollment); afterwards the anchor is checked, never
      silently rewritten.
-3. **Risk gate** — the PDP scores the login from device/network/time signals. A new device forces
-   `STEP_UP` (MFA) before any data is reachable.
+3. **Risk gate** — the PDP scores the login from device, network, geovelocity and time signals. A new
+   device forces `STEP_UP` (MFA) before any data is reachable; a physically impossible journey since
+   the student's previous session can reach `TERMINATE` and refuse the login outright.
 
 A subtle but load-bearing rule: a device/network is only marked "known" **after** a successful
 step-up, never at password time. Otherwise anyone with the password could whitelist their machine by
 attempting a login and walking away.
+
+**Geovelocity at login compares against the previous *session*, not the `KnownNetwork` table.** That
+choice matters: a network is only recorded once MFA has succeeded, so keying off it would miss exactly
+the unverified logins the signal exists to catch. The previous session row is the honest record of
+"where this student last authenticated from, and when", whether or not that attempt was trusted.
+
+**A blocked login is written to the ledger before the 403 is returned.** ROADMAP §4.2 defines DENY as
+"block this request *and* log it", and §2 step 4 writes every decision on-chain — a refused login is
+the single most security-relevant event the system produces, so the audit trail must not be silent
+about it. There is no session to attribute it to (the block happens before one is created), which is
+why `RiskEvent.sessionId` is nullable. This branch was genuinely unreachable until geovelocity joined
+the login signals: the earlier weights capped below the DENY threshold, so nothing had ever exercised
+it, and the omission surfaced only when a real run produced a 403 with no corresponding audit record.
 
 ### 6.2 The PDP — risk scoring
 
@@ -299,14 +408,23 @@ the total:
 riskScore = Σ (weight of every signal that fired), clamped 0–100
 ```
 
-| Signal | Weight | Meaning |
-|---|---|---|
-| `newDevice` | **30** | Current device fingerprint ≠ the one recorded for this context |
-| `newIpAddress` | 20 | Current IP ≠ the recorded one |
-| `oddHour` | 10 | Outside business hours (06:00–22:00) |
-| `staleSession` | 15 | Session past 85% of its lifetime |
-| `highRequestRate` | 20 | > 30 requests in a 10s window |
-| `sensitiveResource` | 10 | Path is `/api/fees` or `/api/results` |
+All seven ROADMAP §4.1 signals are implemented:
+
+| Signal | Weight | §4.1 row | Meaning |
+|---|---|---|---|
+| `impossibleTravel` | **35** | IP / geovelocity | Reaching this location from the previous one would need > 900 km/h |
+| `newDevice` | **30** | Device fingerprint | Current device fingerprint ≠ the one recorded for this context |
+| `newIpAddress` | 20 | IP | Current IP ≠ the recorded one |
+| `highRequestRate` | 20 | Behaviour (rate) | > 30 requests in a 10 s window |
+| `abnormalNavigation` | 15 | Behaviour (navigation sequence) | > 8 *distinct* resources in a 60 s window |
+| `staleSession` | 15 | Session age | Session past 85% of its lifetime |
+| `oddHour` | 10 | Time of day | Outside business hours (06:00–22:00) |
+| `sensitiveResource` | 10 | Resource sensitivity | Path is `/api/fees` or `/api/results` |
+
+*Credential validity* — §4.1's remaining row — is deliberately **not** a weighted signal. It is a
+hard pre-gate: bcrypt plus the on-chain anchor check must both pass before any risk score is
+computed ([§6.1](#61-login--identity-anchoring)). A wrong password is not a risk factor to be
+outweighed by favourable ones; it is a refusal.
 
 | Risk score | Decision | Meaning |
 |---|---|---|
@@ -320,6 +438,27 @@ riskScore = Σ (weight of every signal that fired), clamped 0–100
 the student has used before (campus wifi, home, localhost in a demo) would be let straight through with
 no MFA. The config file even has a startup assertion that throws if `newDevice` drops below the
 threshold — *"this bug shipped once; the assertion is here so it cannot ship again."*
+
+**Why `impossibleTravel = 35`** — the only signal weighted above `newDevice`, and the reasoning is
+categorical rather than statistical. A new device is *unusual*; impossible travel is *physically
+false* — the same person cannot be in London and Sydney four minutes apart, so one of the two
+sessions is definitionally not the student. Alone it reaches `STEP_UP`; combined with `newDevice`
+it reaches 65 → `DENY`, which is the right answer for a credential replayed from another
+continent. A second startup assertion guards this weight the same way.
+
+**Why `abnormalNavigation = 15`, below the `ALLOW` threshold** — deliberately the opposite choice.
+Navigation breadth is a heuristic about how a person browses, and a genuine power user opening
+several pages quickly can trip it, so it must never demand MFA unaided. It earns its keep by
+compounding: with a sensitive resource (25) it still passes, but alongside a new device (45) or a
+high request rate (35) it pushes an enumeration sweep into `STEP_UP`.
+
+> **Geolocation is offline and table-driven** ([zerotrust/geo.ts](backend/src/zerotrust/geo.ts)).
+> ROADMAP §8's ethics constraint is a self-contained prototype with no third-party systems, so
+> locations resolve from a local table of the RFC 5737 documentation ranges the simulation drives.
+> Any IP that cannot be located — localhost, private ranges — yields `impossibleTravel: false`
+> rather than a guess: fabricating a location would manufacture impossible travel out of nothing
+> and inflate the attack-resistance figure. Production swaps the table for MaxMind GeoLite2 behind
+> the same `locate()` call.
 
 Signals are built two ways ([signals.ts](backend/src/zerotrust/signals.ts)):
 - `buildLoginSignals` — "has this student ever used this device/network before?" (checked against the
@@ -487,9 +626,12 @@ against an in-memory stub, run with `npm test` in the chaincode dir. They valida
 register/verify/revoke/re-anchor semantics; audit sequencing + chain linkage; append-only rejection of
 duplicate ids; per-student and full trails; input validation; and tamper detection.
 
-> **Not deployed yet.** Chaincode only *runs* on a live Fabric peer, which is the Ubuntu step. Today the
-> backend uses `MockLedger`; when the network is up, `FabricLedger` wraps these contracts and nothing
-> above `LedgerService` changes.
+> **Deployed and endorsed by both peers.** `FabricLedger` wraps these contracts and nothing above
+> `LedgerService` changes — the same engine, simulation and metrics run unmodified on either
+> implementation. Beyond the 26 offline checks, `npm run test:fabric` runs 22 acceptance checks
+> against the live network (identity semantics, hash-chain ordering, concurrent-write safety,
+> tamper detection), and records have been read back directly from a peer, bypassing the
+> application entirely, to confirm they are genuinely on-chain.
 
 ---
 
@@ -506,11 +648,13 @@ flowchart LR
   RUN --> S2["Scenario 2<br/>invalid credential → DENY"]
   RUN --> S3["Scenario 3<br/>stolen password → STEP_UP/blocked"]
   RUN --> S4["Scenario 4<br/>log tampering → detected"]
+  RUN --> S6["Scenario 6<br/>lateral movement → contained"]
   RUN --> S5["Scenario 5<br/>hijacked session → TERMINATE"]
   S1 --> OUT[(simulation-latest.json<br/>labelled outcomes)]
   S2 --> OUT
   S3 --> OUT
   S4 --> OUT
+  S6 --> OUT
   S5 --> OUT
 ```
 
@@ -521,13 +665,55 @@ flowchart LR
 | 3 | [s3-credential-theft.ts](backend/simulation/scenarios/s3-credential-theft.ts) | Correct password, unknown device | STEP_UP, blocked | FAR, attack resistance |
 | 4 | [s4-log-tampering.ts](backend/simulation/scenarios/s4-log-tampering.ts) | Edit the audit mirror | Verifier flags mismatch | Audit integrity |
 | 5 | [s5-abnormal-behaviour.ts](backend/simulation/scenarios/s5-abnormal-behaviour.ts) | Replay token from another machine | Mid-session TERMINATE | Continuous validation |
+| **6** | [s6-lateral-movement.ts](backend/simulation/scenarios/s6-lateral-movement.ts) | **Legitimate session tries to spread** | **Contained on every axis** | **FAR, attack resistance** |
 
-Shared machinery lives in [harness.ts](backend/simulation/harness.ts) (HTTP client, simulated devices,
-MFA helpers, account reset/preparation) and the labelled-outcome types in
-[types.ts](backend/simulation/types.ts). Each trial is tagged `legitimate` or `attack` with whether the
-actor *actually reached data* — which is exactly the confusion matrix (see §9). Runs use dedicated
-synthetic students (never the hero account) and reset them first, so results are deterministic and
-re-runnable.
+Execution order is 1 → 2 → 3 → 4 → 6 → 5, and it is not arbitrary: 1–3 run first so there is real
+hash-chained history for 4 to tamper with, and 5 runs last because it waits on real background-monitor
+ticks rather than simulating them.
+
+### Why Scenario 6 exists
+
+The five scenarios above come straight from the roadmap's Phase 8 table. Scenario 6 does not — it was
+added because ROADMAP §1 names **three** security challenges and only two were ever exercised.
+Credential compromise is covered by 2 and 3; data adulteration by 4; **lateral movement had no test at
+all**, yet the brief claims the model "re-verifies every request, so a foothold in one area cannot
+silently spread". That claim was unsupported by evidence.
+
+Scenarios 2 and 3 model an attacker trying to **get in**. Scenario 6 assumes they already **are** in —
+it starts from the strongest possible foothold, a fully legitimate, MFA-enrolled student session on a
+recognised device — and measures whether that foothold can be widened. Three axes, all labelled
+`attack`:
+
+| Axis | Probes | Contained by |
+|---|---|---|
+| **Horizontal** | Read another student's fees/results/profile by injecting their id | Every query is scoped to the token's own `studentId` — the injected parameter is simply ignored |
+| **Vertical** | Reach the audit trail, research metrics, integrity verifier, and the on-chain revocation endpoint | `requireAdmin` — STUDENT and ADMIN are disjoint roles |
+| **Discovery** | Sweep 12 undocumented endpoints | Nothing to find; the sweep raises `abnormalNavigation` |
+
+An important distinction for the evaluation: containment here is **not** the risk engine blocking a
+suspicious request. It is the authorization model giving the attacker nothing to reach. Both are Zero
+Trust; only one of them is a risk score. `granted` is judged on whether the probe actually yielded
+data — for the horizontal probes, that means data *different from the attacker's own*, since an
+endpoint that ignores the injected id and returns the caller's own record has contained the attempt.
+
+Scenario 6 also carries the **only geovelocity test in the suite**. Every other request in the harness
+originates on localhost, which `geo.ts` deliberately refuses to place — so without an explicit client
+IP the `impossibleTravel` signal could never fire in an evaluation, leaving it implemented but
+unmeasured. The scenario authenticates a victim from a London address and replays the same credential
+from Sydney seconds later; ~17,000 km in that gap is not survivable by any person, and the engine
+blocks it at risk 85 (`newDevice` + `newIpAddress` + `impossibleTravel` → TERMINATE).
+
+Both detection claims are verified against the engine's **own recorded reasons** in the database, not
+inferred from a status code — other signals would also have blocked these requests, and inferring from
+the outcome would not prove the new signals work.
+
+### Shared machinery
+
+[harness.ts](backend/simulation/harness.ts) holds the HTTP client, the simulated devices, MFA helpers,
+and account reset/preparation; labelled-outcome types live in [types.ts](backend/simulation/types.ts).
+Each trial is tagged `legitimate` or `attack` alongside whether the actor *actually reached data* —
+which is exactly the confusion matrix (see §9). Runs use dedicated synthetic students (never the hero
+account) and reset them first, so results are deterministic and re-runnable.
 
 ---
 
@@ -567,12 +753,111 @@ Because the roadmap gives TAR/FAR/FRR separately, the engine rolls "Access Contr
 number as **balanced accuracy = (TAR + (1 − FAR)) / 2**. Any component with no data is dropped and the
 remaining weights renormalized, so a missing scenario lowers confidence rather than silently scoring 0.
 
-> **Open item — "Authentication Performance."** The brief never defined this 10% component. The engine
-> computes it **provisionally** as `1 − meanLoginLatency / 1500ms` and reports the CES **both including
-> and excluding** it — so no number is overstated until the client confirms a definition.
+> **Open item — "Authentication Performance."** ROADMAP §7 Table 1 assigns this 10% but never defines
+> it alongside the other three. The engine scores it against **published HCI response-time
+> thresholds** rather than an invented budget: full marks at or under **3 s** (the common web-response
+> threshold), zero at or over **10 s** (Nielsen's *limit of attention*), linear between. Both anchors
+> come from the literature, not from the measured result — the system meets the target under any
+> definition at or above its measured latency. The CES is still reported **both including and
+> excluding** the component until the client confirms it.
 
-A healthy run reports: **TAR 1.0 · FAR 0 · FRR 0 · attack resistance 100% · audit integrity 100% ·
-session termination 100% · CES 100/100** (excluding the provisional component).
+### 9.1 Measured results
+
+All six scenarios, run against the **live Hyperledger Fabric network** (`LEDGER=fabric`, 2 orgs,
+both contracts endorsing). **Sample sizes accompany every rate**, as ROADMAP §8 requires — a rate
+without its denominator is not a result.
+
+| Metric | Result | Basis |
+|---|---|---|
+| True Acceptance Rate (TAR) | **1.00** | 12 legitimate trials |
+| False Acceptance Rate (FAR) | **0.00** | 36 attack trials |
+| False Rejection Rate (FRR) | **0.00** | 12 legitimate trials |
+| Confusion matrix | **TP 12 · FN 0 · FP 0 · TN 36** | 48 access-control trials (scenarios 1, 2, 3, 6) |
+| Attack resistance | **100%** | 36 / 36 blocked |
+| Audit integrity | **100%** | 6 / 6 tampering attempts detected |
+| Session termination rate | **100%** | 2 risky sessions |
+| Mean anomaly detection time | **7.19 s** | 2 terminated sessions |
+| Mean login latency | **3 310 ms** | on-chain identity-anchor check included |
+| Mean MFA verification | **47 ms** | off-chain, reported but not folded into the score |
+| Authentication Performance | **0.956** | 3 310 ms against a 3 000 ms target / 10 000 ms ceiling |
+| **CES** *(excl. Authentication Performance)* | **100 / 100** | weights renormalized over 3 defined components |
+| **CES** *(incl. provisional Authentication Performance)* | **99.6 / 100** | full 40/30/20/10 weighting |
+
+Both new risk signals were confirmed firing by the engine's own records, not inferred from
+outcomes: `impossibleTravel` blocked a London→Sydney credential replay at risk score 85
+(`newDevice` + `newIpAddress` + `impossibleTravel` → TERMINATE), and `abnormalNavigation` was
+raised by a 12-endpoint discovery sweep. Total run: 50 labelled trials, **zero surprises**.
+
+> **The one number that is not perfect is the honest one.** Measured login latency on the
+> blockchain is **3 310 ms — slightly over the 3 000 ms target**, so Authentication Performance
+> scores 0.956 rather than 1.0 and the full-weighting CES is 99.6, not 100.
+>
+> That threshold was chosen from the HCI literature *before* this run and has deliberately not
+> been adjusted afterwards. Moving it to 3 500 ms would produce a perfect score and would be
+> exactly the fitted-to-result reasoning this report should not engage in. The finding stands as
+> measured: a synchronous on-chain identity check at login costs more than the 3-second web
+> response threshold allows, which is precisely the trade-off [§9.2](#92-measured-cost-of-immutability)
+> quantifies. **This is the number the client's definition should be set against.**
+
+```mermaid
+xychart-beta
+  title "Effectiveness metrics (higher is better; FAR/FRR shown inverted)"
+  x-axis ["TAR", "1-FAR", "1-FRR", "Attack resist.", "Audit integrity", "Session term."]
+  y-axis "Percent" 0 --> 100
+  bar [100, 100, 100, 100, 100, 100]
+```
+
+```mermaid
+xychart-beta
+  title "CES component scores (weights: 40 / 30 / 20 / 10 percent)"
+  x-axis ["Access control", "Continuous valid.", "Audit integrity", "Auth. performance"]
+  y-axis "Component score (%)" 0 --> 100
+  bar [100, 100, 100, 95.6]
+```
+
+Three caveats an examiner will reasonably raise, stated here rather than left to be found:
+
+- **Detection time is 7.19 s, not the 1.4 s** of ROADMAP §7's illustrative table. That is a direct
+  consequence of the continuous monitor's 15 s tick (`continuousMonitorIntervalMs`): mean detection
+  cannot fall below roughly half the polling interval. It is a tuning constant, not a limit of the
+  approach — the trade-off is monitor load against detection latency.
+- **The sample is small** (50 labelled access trials). Perfect scores over tens of trials demonstrate that the mechanisms work as designed;
+  they are not a claim about behaviour at university scale, which ROADMAP §8 already places out of
+  scope.
+- **Perfect scores invite the question of whether the test is too easy.** The honest answer is that
+  the scenarios are adversarial by construction — Scenario 3 gives the attacker the *correct*
+  password, Scenario 6 starts them inside a fully legitimate MFA-enrolled session — and that the
+  simulation is what surfaced four real defects before this run. A 100% that survives those
+  conditions is a statement about the mechanisms, not about the difficulty of the test.
+
+The charts and the underlying numbers are regenerated by `npm run evaluate`, which writes
+`metrics-latest.{json,csv,html}` to [backend/evaluation/results/](backend/evaluation/results/); the
+HTML file is a self-contained interactive dashboard of the same data.
+
+### 9.2 Measured cost of immutability
+
+Going live on Fabric produced two numbers a simulated ledger could not:
+
+| | Off-chain (MockLedger) | On-chain (Fabric) |
+|---|---|---|
+| Access decision | ~0.05 s | **~2.1 s** |
+| Login (incl. anchor check) | 0.30 s | **3.31 s** |
+| Storage per decision | 354 B | **~8 KB on every peer, permanently** |
+
+Both login figures are measured means over the same 6-scenario run executed against each ledger —
+an **11× increase** attributable entirely to moving the identity anchor check and the decision
+write on-chain.
+
+The latency is endorsement by both organisations plus ordering and commit; the storage is the
+transaction envelope, endorsement signatures and certificates that make a record *provable* — the
+audit record itself is only 354 bytes of it. Appends are serialised to preserve the hash chain, so
+concurrent requests queue.
+
+**Interpretation.** Immutability is not free; it is paid for in latency and storage. The current
+design suits high-value security events. For routine access at full university scale, periodic
+**Merkle-root anchoring** — batching decisions off-chain and committing only the root — would
+preserve tamper detection at a fraction of the cost. That is the recommended next architectural
+step, and is out of scope for this prototype.
 
 ---
 
@@ -589,15 +874,46 @@ Directory: [frontend/src/](frontend/src/). React + Vite + TypeScript + Tailwind.
   flow (password, then a TOTP code only if the engine flags the device/network), and a step-up dialog
   ([components/StepUpDialog.tsx](frontend/src/components/StepUpDialog.tsx)) can appear when a
   mid-session request returns `step_up_required`.
-- **Pages** [pages/](frontend/src/pages/) — Login, Dashboard (live trust/risk widget), Course
-  Registration, Fee Statement, Results, and the **Admin/Research view**
-  ([pages/Admin.tsx](frontend/src/pages/Admin.tsx)): the audit-trail viewer, a per-record **Verify
-  Integrity** button, and live engine metrics.
+- **Pages** [pages/](frontend/src/pages/) — Login, Dashboard, Course Registration, Fee Statement,
+  Results, and the **Admin/Research view** ([pages/Admin.tsx](frontend/src/pages/Admin.tsx)): the
+  audit-trail viewer, a per-record **Verify Integrity** button, and live engine metrics.
+- **Role separation** — [components/AdminRoute.tsx](frontend/src/components/AdminRoute.tsx) and
+  `StudentRoute` gate the two areas on `student.role`, with a role-aware landing redirect. The UI
+  guard is convenience; the real boundary is `requireAdmin` on the server, so a client that ignores
+  the role field still receives a 403.
+
+**The trust/risk widget polls.** ROADMAP Phase 7 asks for a *live* widget, and a value captured at
+login is not one: the background monitor re-scores sessions every 15 seconds, so a static number can
+sit on screen contradicting the engine right up until the session is terminated — hiding the single
+behaviour the whole prototype exists to demonstrate. `AuthContext` re-reads the student every 15
+seconds to match the monitor's tick, suspending while the tab is hidden and refreshing immediately on
+return. It polls `/api/auth/me` deliberately: that route sits behind `requireAuth` only, **not** the
+PEP, so the widget cannot feed its own request rate back into the `highRequestRate` signal or add
+resources to the navigation-breadth window. A widget that raised the risk it displays would be worse
+than no widget.
+
+**A terminated session says so.** The backend distinguishes an engine termination
+(`401 session_terminated`) from an ordinary expiry, and the client preserves that distinction through
+to the login screen, which explains what happened. Collapsing the two — which is what happens if you
+only inspect the status code — makes a Zero Trust kill indistinguishable from an idle timeout: the
+student is silently bounced to a blank form with no indication the engine acted.
 
 The Admin view deliberately shows **only** the metrics that can be computed honestly from live traffic
 (decision counts, session termination rate, mean detection time). It does **not** show TAR/FAR/FRR/CES,
 because those require the *labelled* attack-vs-legitimate traffic that only the Phase 8 simulation
 produces — you cannot compute them from unlabelled real users.
+
+Two identity operations are exposed through the API rather than the UI (both admin-only, both
+documented at `/docs`):
+
+- `GET /api/admin/identity/{studentId}/verify` — the identity counterpart of the audit verifier.
+  Recomputes the credential hash from PostgreSQL and submits it to `IdentityContract.verifyIdentity`,
+  so **the comparison happens inside the chaincode**, not in this server. `validOnChain: false` with
+  `revoked: false` means the stored password hash no longer matches its anchor — the database was
+  tampered with. This is the production call site of the roadmap's `verifyIdentity`; login uses the
+  richer `getIdentity` path instead, for the reason given in [§6.1](#61-login--identity-anchoring).
+- `POST /api/admin/identity/{studentId}/revoke` — irreversible, so deliberately not a button. A
+  one-click control for a permanent action in a demo interface is a hazard, not a feature.
 
 ---
 
@@ -630,41 +946,100 @@ Two concrete walkthroughs to tie it all together.
    data → in the metrics this is a **TN** (attacker correctly blocked) and counts toward 100% attack
    resistance.
 
+### Trace C — a legitimate student tries to spread (Scenario 6)
+
+The case the risk engine does **not** handle, and does not need to.
+
+1. A real, MFA-enrolled student signs in from their own recognised device. Every signal is clean:
+   score 0 → `ALLOW`. Nothing about this session is suspicious, and nothing should be.
+2. They request `GET /api/fees?studentId=<another student>`. The PEP scores it — `sensitiveResource`
+   fires (+10) → score 10 → `ALLOW`. **The request is permitted**, and the handler runs.
+3. The handler queries `getFeeStatement(req.auth!.studentId)` — the id from the *token*, never the
+   query string. The response is the caller's own statement, byte-identical to what `/api/fees` would
+   have returned. The injected parameter had no effect because nothing ever reads it.
+4. They try `GET /api/admin/audit`. `requireAdmin` reads the role from PostgreSQL (not from the token,
+   so a revoked admin loses access immediately) → `403 forbidden`.
+5. They sweep 12 undocumented paths. All 404. Distinct-resource count crosses 8 in the window →
+   `abnormalNavigation` fires, and the risk score begins climbing on subsequent requests.
+
+The lesson for the evaluation: **containment came from authorization, not from risk scoring.** Step 2
+was correctly allowed — treating a legitimate student's own dashboard traffic as suspicious would
+generate false rejections and damage TAR for no security benefit. The attempt failed because there was
+nothing to reach: no endpoint accepts another student's id, and the admin surface is a different role
+entirely. Risk scoring is the second line, and it does its job in step 5 by making a *pattern* of
+probing visible even when each individual request is innocuous.
+
 ---
 
 ## 12. How to run everything
 
-**Prerequisites:** Node 20+, PostgreSQL 16+ with a database named `blockchain`.
+**Prerequisites:** Docker and Node 20+. Nothing else — PostgreSQL is containerised, and the
+scripts install dependencies, generate `.env`, migrate and seed on first run.
+
+### One command
 
 ```bash
-# ── backend (first run) ──────────────────────────────────────────────
-cd backend
-npm install
-cp .env.example .env          # set DATABASE_URL and JWT_SECRET
-npm run db:migrate            # create tables
-npm run db:seed               # 30 students, courses, fees, results
-npm run dev                   # http://localhost:3000  (Swagger UI at /docs)
-
-# ── frontend (second terminal) ───────────────────────────────────────
-cd frontend
-npm install
-npm run dev                   # http://localhost:5173
-
-# ── verify the engine end-to-end (backend must be running) ───────────
-cd backend
-npm run test:e2e              # drives the real backend over HTTP
-
-# ── the evaluation pipeline (backend must be running) ────────────────
-npm run sim                   # Phase 8: stage the 5 scenarios → simulation/results/*.json
-npm run evaluate              # Phase 9: compute metrics + CES → evaluation/results/*.{json,csv,html}
-#   open backend/evaluation/results/metrics-latest.html for the chart
-
-# ── chaincode offline tests ──────────────────────────────────────────
-cd backend/chaincode
-npm install && npm test       # 26 checks (append-only, hash-chaining, tamper detection)
+./scripts/start.sh              # MockLedger or whatever backend/.env says
+./scripts/start.sh --fabric     # also starts the Fabric network + deploys the chaincode
+./scripts/start.sh --fabric --keep   # reuse a network that is already running
 ```
 
-Sign in with `SU/CS/2023/0187` / `demo1234`.
+That replaces the eight manual steps this previously took (start Postgres → migrate → seed →
+`network.sh up` → `deployCC` → copy three certificates → start backend → start frontend). It
+brings up:
+
+| | |
+|---|---|
+| Portal | http://localhost:5173 |
+| API + Swagger UI | http://localhost:3000 · http://localhost:3000/docs |
+| PostgreSQL | localhost:**55432** (containerised) |
+
+Sign in as `SU/CS/2023/0187` / `demo1234`, or `SU/IT/ADMIN/001` / `demo1234` for the Admin view.
+Ctrl-C stops the backend and frontend; `./scripts/stop.sh` stops PostgreSQL.
+
+> **Why port 55432 and not 5432?** Machines that have run this project usually have a local
+> PostgreSQL on 5432. Docker will publish onto the same port on Windows rather than refusing to
+> bind, and the host then resolves `localhost:5432` to whichever bound first — so the stack quietly
+> connects to the wrong database. Publishing somewhere unlikely to be occupied keeps the packaged
+> stack self-contained. If `backend/.env` already points elsewhere, `start.sh` says so instead of
+> starting a container nobody uses.
+
+### The rest
+
+```bash
+# ── evaluation pipeline (stack must be running) ──────────────────────
+cd backend
+npm run sim                   # Phase 8: 6 scenarios → simulation/results/*.json
+npm run evaluate              # Phase 9: metrics + CES → evaluation/results/*.{json,csv,html}
+#   open backend/evaluation/results/metrics-latest.html for the dashboard
+
+# ── verification ─────────────────────────────────────────────────────
+npm run test:e2e              # drives the running backend over HTTP
+npm run test:fabric           # ledger acceptance checks — STOP THE BACKEND FIRST (see below)
+npm run typecheck             # src/ AND simulation/evaluation/tests/prisma
+cd chaincode && npm install && npm test    # 26 offline chaincode checks
+
+# ── teardown ─────────────────────────────────────────────────────────
+./scripts/stop.sh             # stop PostgreSQL (data preserved)
+./scripts/stop.sh --purge     # ...and delete the volume
+./scripts/stop.sh --fabric    # ...and tear down the Fabric network
+```
+
+> **`npm run test:fabric` needs the backend stopped.** It writes to the ledger directly, so a
+> running backend appends to the same chain from another process. Both contend for the single
+> `audit:head` key and one fails at commit with `MVCC_READ_CONFLICT` — the in-process append queue
+> cannot serialise across processes. That is inherent to a hash-chained log (one global tail is one
+> global serialisation point), not a defect, and it is the same pressure that motivates the
+> Merkle-root batching in [§9.2](#92-measured-cost-of-immutability). With the backend stopped the
+> suite passes 22/22. The other suites are unaffected: `test:e2e` and `npm run sim` drive the
+> backend over HTTP, so all their chain writes go through the one process that holds the queue.
+
+> **Re-seeding on Fabric is destructive and `start.sh` will not do it silently.** `prisma/seed.ts`
+> regenerates every password hash, and an identity anchor is a commitment to that hash. It clears
+> the MockLedger's anchor table to stay consistent, but on Fabric the anchors are on-chain and
+> cannot be deleted — so re-seeding leaves every stored hash disagreeing with its anchor and every
+> login refused with `identity_mismatch`. On Fabric the script seeds only an empty database, and
+> `--seed` prompts first.
 
 ---
 
@@ -672,31 +1047,45 @@ Sign in with `SU/CS/2023/0187` / `demo1234`.
 
 | Phase | Status |
 |---|---|
-| 1 — Environment setup | ❌ Not started (needs Ubuntu/WSL2 + Docker + Fabric binaries) |
+| 1 — Environment setup | ✅ Done (WSL2 + Docker + Fabric 2.5 toolchain) |
 | 2 — Scaffold + LedgerService | ✅ Done |
-| 3 — PostgreSQL + seed | ✅ Done |
-| 4 — Fabric network | ❌ Not started (the Ubuntu step) |
-| 5 — Chaincode | 🟡 Source written + tested, **not deployed** |
-| 6 — Backend + Zero Trust engine | ✅ Done (on MockLedger) |
-| 7 — React portal | ✅ Done |
-| 8 — Attack scenarios | ✅ Done |
-| 9 — Metrics + CES | ✅ Done |
+| 3 — PostgreSQL + seed | ✅ Done — 30 students + 1 administrator |
+| 4 — Fabric network | ✅ Done — 2 orgs, 1 channel, CA identities, one-command start script |
+| 5 — Chaincode | ✅ Done — both contracts deployed and endorsed by both peers |
+| 6 — Backend + Zero Trust engine | ✅ Done — all 7 §4.1 signals implemented |
+| 7 — React portal | ✅ Done — incl. live trust widget and STUDENT/ADMIN split |
+| 8 — Attack scenarios | ✅ Done — 6 scenarios (the 5 required, plus lateral movement) |
+| 9 — Metrics + CES | ✅ Done — metrics, charts, and one-command packaging |
 
-**Everything Windows-authorable is complete.** The one remaining chunk is the **Ubuntu/Fabric port**:
+**The build is complete.** Every phase of the approved roadmap is implemented and running against
+the live Fabric network. What follows is the honest list of what is *not* claimed.
 
-1. Set up WSL2 + Docker + Fabric 2.5 (Phase 1).
-2. Stand up the 2-org test-network with a one-command start script (Phase 4).
-3. Deploy the chaincode onto it (already written).
-4. Implement `FabricLedger.ts`'s method bodies against `@hyperledger/fabric-gateway` and set
-   `LEDGER=fabric`.
+**One open decision, which needs the client:**
 
-After that flip, **every layer above `LedgerService` runs unchanged** — the same engine, the same
-simulation, the same metrics — now against a real blockchain.
+- **"Authentication Performance"** (ROADMAP §7, 10% weight) is defined in Table 1 but never given a
+  formula. It is currently scored against published HCI thresholds (3 s target / 10 s ceiling, see
+  [§9](#9-the-metrics--ces-engine-phase-9)) and flagged `provisional` in every export. Measured
+  login latency on the blockchain is **3.31 s**, which slightly exceeds that target — scoring
+  0.956 and putting the full-weighting CES at 99.6. **Confirming an acceptable login time is the
+  last thing standing between the report and an unasterisked CES.**
 
-**Two open decisions** (neither blocks the Ubuntu work):
-- The **"Authentication Performance"** CES component still needs a client-confirmed definition.
-- No separate **admin role** exists — the Admin/Research view is open to any signed-in student (a
-  deliberate research-prototype simplification, per the roadmap's scope).
+**Deliberate prototype limitations** (all within ROADMAP §8's declared scope):
+
+- **Geolocation is table-driven, not a live GeoIP service.** `zerotrust/geo.ts` resolves the RFC
+  5737 documentation ranges the simulation uses; production would substitute MaxMind GeoLite2
+  behind the same `locate()` function. §8's ethics constraint rules out third-party lookups here,
+  and a fixed table keeps every evaluation run reproducible.
+- **Behaviour modelling is rate + navigation breadth**, not behavioural biometrics. §8 already
+  names ML/biometric scoring as future work.
+- **Two organisations on one host.** A functional research deployment, not a production topology.
+- **Identity revocation is permanent.** `IdentityContract` has no un-revoke transaction by design,
+  so `POST /api/admin/identity/:id/revoke` is an explicit administrative act and is deliberately
+  *not* wired to the risk engine's TERMINATE decision — a false-positive score must never be able
+  to lock a student out of their records irreversibly.
+
+**Recommended next architectural step** (out of scope, evidenced in
+[§9.2](#92-measured-cost-of-immutability)): periodic **Merkle-root anchoring** to reduce the ~2.1 s
+and ~8 KB per-decision cost of writing every event on-chain.
 
 ---
 

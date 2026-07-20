@@ -48,7 +48,8 @@ function printSummary(r: MetricsReport): void {
   console.log(`      ${p(r.auditIntegrity.percent, '%')}  (${r.auditIntegrity.detected}/${r.auditIntegrity.total} detected)`)
   console.log('\n  Authentication performance (PROVISIONAL — see notes)')
   console.log(`      Mean login ${p(r.authenticationPerformance.meanLoginMs, 'ms')}   ` +
-    `score ${p(r.authenticationPerformance.score)}  (budget ${r.authenticationPerformance.budgetMs}ms)`)
+    `score ${p(r.authenticationPerformance.score)}  ` +
+    `(full marks ≤${r.authenticationPerformance.targetMs}ms, zero ≥${r.authenticationPerformance.ceilingMs}ms)`)
   console.log('\n  ' + '─'.repeat(56))
   console.log(`  CES (incl. provisional auth-perf): ${p(r.ces.ces)} / 100`)
   console.log(`  CES (excl. auth-perf):             ${p(r.ces.cesExcludingAuthPerformance)} / 100`)

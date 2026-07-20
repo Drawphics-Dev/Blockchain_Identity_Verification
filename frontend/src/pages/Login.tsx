@@ -9,6 +9,7 @@ import {
   Loader2,
   ArrowRight,
   ShieldCheck,
+  ShieldAlert,
   LifeBuoy,
 } from 'lucide-react'
 import { brand } from '@/config/brand'
@@ -27,7 +28,7 @@ import { MfaChallenge } from '@/components/MfaChallenge'
  * page's — a first-time student and a returning one land in the same place here.
  */
 export function Login() {
-  const { login, confirmMfaVerified, cancelPendingLogin } = useAuth()
+  const { login, confirmMfaVerified, cancelPendingLogin, sessionEndReason } = useAuth()
   const navigate = useNavigate()
 
   const [step, setStep] = useState<'credentials' | 'mfa'>('credentials')
@@ -122,6 +123,22 @@ export function Login() {
                   </h1>
                   <p className="mt-1 text-sm text-navy-400">Use your university student credentials.</p>
                 </div>
+
+                {/* The engine ended the last session. Say so, plainly and before the form —
+                    an unexplained bounce to a blank login screen is indistinguishable from an
+                    idle timeout, which hides the one moment continuous verification is for. */}
+                {sessionEndReason === 'terminated' && !error && (
+                  <div className="mb-6 flex items-start gap-2.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                    <ShieldAlert className="mt-0.5 h-4 w-4 flex-none text-amber-600" />
+                    <div>
+                      <p className="font-semibold">Your session was ended for your protection.</p>
+                      <p className="mt-0.5 text-amber-800">
+                        Continuous verification detected unusual activity and signed you out. Sign
+                        in again to continue — if this was not you, contact {brand.supportEmail}.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="hidden lg:block">
                   <h2 className="font-display text-2xl font-semibold text-navy-900">Sign in</h2>

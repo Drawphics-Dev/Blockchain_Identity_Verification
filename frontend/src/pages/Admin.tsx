@@ -1,8 +1,11 @@
 /**
  * Admin / Research view (ROADMAP Phase 7): the audit-trail viewer, per-record "Verify
- * Integrity" action, and live engine metrics. Any signed-in student can reach this route —
- * there is no separate admin role in the data model, which matches this being a research
- * prototype's transparency view rather than a production admin console.
+ * Integrity" action, and live engine metrics.
+ *
+ * ADMIN-ONLY. <AdminRoute> keeps students out of this route in the UI, but the real boundary is
+ * `requireAdmin` on the server — a client that ignores the role field still gets a 403. The trail
+ * names every student and every decision made about them, so it is the one resource a student must
+ * not be able to read about anyone else.
  */
 import { useState } from 'react'
 import { RefreshCw, Search, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react'
@@ -267,7 +270,7 @@ export function Admin() {
       <PageHeader
         eyebrow="Zero Trust Engine"
         title="Admin / Research View"
-        description="The immutable audit trail, per-record integrity verification, and live engine metrics — ROADMAP Phase 7."
+        description="The immutable audit trail, per-record integrity verification, and live engine metrics."
       />
       <div className="space-y-12">
         <MetricsPanel />

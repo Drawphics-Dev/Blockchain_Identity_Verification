@@ -7,6 +7,15 @@
  *
  * Requires the Fabric env vars and a live network:
  *   npm run test:fabric
+ *
+ * ⚠️ STOP THE BACKEND FIRST. This writes to the ledger DIRECTLY, so if the backend is also
+ * running, its continuous monitor is appending to the same chain from a different process.
+ * Both then contend for the single `audit:head` key and one loses at commit with
+ * MVCC_READ_CONFLICT — FabricLedger's in-process queue cannot serialise across processes, and
+ * under sustained contention its retry budget can be exhausted. That is a property of a
+ * hash-chained log (one global tail, therefore one global serialisation point), not a defect,
+ * and it is the same pressure that motivates the Merkle-root batching recommended in
+ * TECHNICAL_REPORT §9.2. With the backend stopped this suite passes 22/22.
  */
 import { randomUUID } from 'node:crypto'
 import { FabricLedger } from '../src/ledger/FabricLedger'

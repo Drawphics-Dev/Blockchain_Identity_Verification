@@ -61,12 +61,23 @@ export interface RiskSignals {
   newDevice: boolean
   /** Current IP differs from the one recorded for this context. */
   newIpAddress: boolean
+  /**
+   * Reaching this location from the previous one would require travelling faster than the
+   * configured maximum — the ROADMAP §4.1 "geovelocity / impossible travel" signal.
+   * Stays false whenever either endpoint cannot be geolocated (see zerotrust/geo.ts).
+   */
+  impossibleTravel: boolean
   /** Outside configured business hours (policy.config.ts). */
   oddHour: boolean
   /** Session age is past the configured fraction of its total lifetime. */
   staleSession: boolean
   /** More requests in the configured window than the configured limit. */
   highRequestRate: boolean
+  /**
+   * This session touched more DISTINCT resources in the window than a normal user journey
+   * covers — the ROADMAP §4.1 "navigation sequence" half of the behaviour-pattern signal.
+   */
+  abnormalNavigation: boolean
   /** The requested resource is one of the sensitive routes (fees, results). */
   sensitiveResource: boolean
 }

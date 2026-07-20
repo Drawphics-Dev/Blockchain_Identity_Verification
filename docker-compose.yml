@@ -1,0 +1,52 @@
+# PostgreSQL for the prototype (ROADMAP Phase 3), containerised so the stack starts from a
+# clean, known state on any host with Docker — no local Postgres install, no version drift.
+#
+# WHY ONLY THE DATABASE IS CONTAINERISED
+#
+# The backend and frontend deliberately run on the host (see scripts/start.sh). The backend
+# must reach the Fabric peer at localhost:7051, and the Fabric test-network publishes its
+# peers on the HOST's loopback interface — from inside a container, `localhost` is the
+# container, so the gateway connection fails. Solving that properly means either host
+# networking (Linux-only, so it would break the WSL2 + Docker Desktop setup this project
+# targets) or joining the test-network's own Docker network by name, which couples this file
+# to fabric-samples' internal naming and breaks whenever that changes.
+#
+# Containerising the one component with no such constraint gets the real benefit — a
+# reproducible database — without making the Fabric integration fragile. ROADMAP §8 already
+# frames this as a functional research deployment on a single host, not a production one.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ziam-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ziam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ziam_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-blockchain}
+    ports:
+      # Published so Prisma, `npm run sim` and psql can all reach it from the host.
+      #
+      # 55432, NOT the default 5432, and that matters. Most developer machines that have run
+      # this project already have a local PostgreSQL install listening on 5432. Docker will
+      # happily publish onto the same port on Windows rather than refusing to bind, and the
+      # host then resolves localhost:5432 to whichever bound first — so the stack connects to
+      # the WRONG database and fails with an authentication error that points nowhere near the
+      # real cause. Publishing somewhere unlikely to be occupied makes the packaged stack
+      # self-contained: it never competes with, or silently borrows, a local install.
+      - '${POSTGRES_PORT:-55432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # start.sh blocks on this before running migrations — Postgres accepts TCP connections
+      # for a short window before it will actually answer queries, and migrating into that
+      # window fails with a confusing error rather than a clear "not ready yet".
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-ziam} -d ${POSTGRES_DB:-blockchain}']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  postgres-data:
+    name: ziam-postgres-data

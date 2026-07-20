@@ -48,19 +48,28 @@ export const openapiSpec = {
       'sessions on an interval and can terminate one with no new request. See ROADMAP §4.',
       '',
       '**Identity anchor.** Login is a second, independent gate on top of the password: the',
-      'backend verifies (and anchors, on first use) an identity anchor on the ledger via',
-      '`LedgerService.verifyIdentity`. A revoked anchor blocks login with `403 identity_revoked`',
-      'even when the password is still correct — instant revocation that bcrypt alone can’t give.',
+      'backend reads the anchor with `LedgerService.getIdentity` (anchoring it on first use) and',
+      'compares it to a hash recomputed from the stored credential. Two distinct failures are',
+      'reported separately, because they mean different things: `403 identity_revoked` (an',
+      'administrative act) and `403 identity_mismatch` (the stored hash no longer agrees with the',
+      'anchor — a tampering indicator). Both block login even when the password is still correct,',
+      'which is the property bcrypt alone cannot give.',
       '',
-      '**Trying step-up:** `GET /api/auth/mfa-secret` (prototype-only convenience) returns the',
-      'signed-in student’s TOTP secret; feed it to any authenticator app or `otplib` to get a code.',
+      '**Trying step-up:** bind an authenticator through `GET` then `POST /api/auth/mfa/enroll`,',
+      'which require the registrar’s one-time enrollment token (issued out of band by the seed',
+      'script). A correct password is deliberately NOT sufficient to enroll — otherwise whoever',
+      'signs in first binds the second factor. Afterwards, `POST /api/auth/step-up` answers a',
+      'challenge with a TOTP code.',
       '',
       '**Audit trail.** `GET /api/admin/audit` lists every decision written to the ledger;',
       '`GET /api/admin/audit/verify/{eventId}` recomputes the off-chain mirror’s hash and compares',
       'it to the immutable on-chain record — a mismatch means the PostgreSQL copy was tampered with.',
+      '`POST /api/admin/identity/{studentId}/revoke` revokes an identity anchor on-chain. All three',
+      'are ADMIN-only.',
       '',
-      '**Not implemented yet:** the real Fabric ledger (the engine currently writes through',
-      '`LedgerService` to `MockLedger`) and the frontend admin/research view. See ROADMAP.md.',
+      '**Ledger.** Runs on a live Hyperledger Fabric 2.5 network (`LEDGER=fabric`); `MockLedger`',
+      '(`LEDGER=mock`) remains available behind the same interface for development without a',
+      'blockchain. A peer outage returns `503 ledger_unavailable`, never a 500.',
     ].join('\n'),
   },
   servers: [{ url: 'http://localhost:3000', description: 'Local development' }],
@@ -348,30 +357,12 @@ export const openapiSpec = {
       },
     },
 
-    '/api/auth/mfa-secret': {
-      get: {
-        tags: ['Auth'],
-        summary: 'This student’s TOTP secret (prototype/demo convenience)',
-        description:
-          'Returns the signed-in student’s own TOTP secret and otpauth:// URI, so it can be fed ' +
-          'to an authenticator app (or `otplib` directly) to compute a step-up code. A real ' +
-          'deployment would gate this behind an enrollment flow instead of exposing it on demand.',
-        responses: {
-          200: {
-            description: 'The TOTP secret.',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { secret: { type: 'string' }, otpauthUrl: { type: 'string' } },
-                },
-              },
-            },
-          },
-          401: errorResponse('No valid session.'),
-        },
-      },
-    },
+    // NOTE: `GET /api/auth/mfa-secret` was documented here but never existed as a route — the
+    // spec promised a 200 on a path that has only ever returned 404. It was superseded by the
+    // guarded enrollment flow (`GET|POST /api/auth/mfa/enroll`), which requires the registrar's
+    // out-of-band token precisely so a correct password alone cannot reveal the shared secret.
+    // Handing that secret to anyone with a session, as the removed endpoint described, would
+    // have let a password thief mint their own codes and defeated step-up entirely.
 
     '/api/auth/logout': {
       post: {
@@ -670,7 +661,126 @@ export const openapiSpec = {
             },
           },
           401: errorResponse('No valid session.'),
+          403: errorResponse('`forbidden` — administrator access required.'),
           404: errorResponse('No audit event with that id, on-chain or in the mirror.'),
+        },
+      },
+    },
+
+    '/api/admin/identity/{studentId}/verify': {
+      get: {
+        tags: ['Admin'],
+        summary: 'Identity-anchor check for one student (verified on-chain)',
+        description:
+          'The identity counterpart of the audit verifier. Recomputes the credential hash from ' +
+          'what PostgreSQL holds right now and submits it to `IdentityContract.verifyIdentity`, so ' +
+          'the comparison is performed **inside the chaincode** rather than by this server.\n\n' +
+          '`validOnChain: false` with `revoked: false` means the stored password hash no longer ' +
+          'matches what was anchored — the off-chain database was tampered with (ROADMAP §1, data ' +
+          'adulteration). `agreesWithLocalCheck: false` would mean this server and the ledger ' +
+          'disagree, which should never happen and warrants investigation.',
+        parameters: [
+          {
+            name: 'studentId',
+            in: 'path',
+            required: true,
+            description: 'Matriculation number, e.g. `SU/CS/2023/0187`.',
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'The on-chain identity verdict.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    studentId: { type: 'string' },
+                    validOnChain: { type: 'boolean', description: 'The chaincode’s own verdict.' },
+                    revoked: { type: 'boolean' },
+                    credentialMatches: { type: 'boolean' },
+                    anchoredAt: { type: 'string', format: 'date-time' },
+                    agreesWithLocalCheck: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+          },
+          401: errorResponse('No valid session.'),
+          403: errorResponse('`forbidden` — administrator access required.'),
+          404: errorResponse('No student with that matriculation number.'),
+          409: errorResponse('`not_anchored` — the student has never logged in, so no anchor exists.'),
+        },
+      },
+    },
+
+    '/api/admin/identity/{studentId}/revoke': {
+      post: {
+        tags: ['Admin'],
+        summary: 'Revoke a student’s on-chain identity anchor (PERMANENT)',
+        description:
+          'Zero Trust instant revocation (ROADMAP §4.2). Revokes the anchor on-chain, so every ' +
+          'future login is refused at the identity gate with `403 identity_revoked` even with the ' +
+          'correct password, then revokes the student’s live sessions so the block takes effect ' +
+          'immediately. The administrative act itself is written to the audit trail.\n\n' +
+          '**This cannot be undone.** IdentityContract has no un-revoke transaction, and ' +
+          '`registerIdentity` deliberately preserves the revoked flag so a re-registration cannot ' +
+          'quietly reverse one. It is therefore an explicit act by a named administrator and is ' +
+          'NOT wired to the risk engine’s TERMINATE decision — a false-positive risk score must ' +
+          'never be able to lock a student out of their records irreversibly.',
+        parameters: [
+          {
+            name: 'studentId',
+            in: 'path',
+            required: true,
+            description: 'Matriculation number, e.g. `SU/CS/2023/0187`.',
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['reason'],
+                properties: {
+                  reason: {
+                    type: 'string',
+                    maxLength: 200,
+                    description: 'Why — recorded in the trail. Revocation is permanent, so it must be justified.',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'The identity was revoked on-chain.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    studentId: { type: 'string' },
+                    revoked: { type: 'boolean' },
+                    sessionsRevoked: { type: 'integer', description: 'Live sessions closed by this action.' },
+                    reason: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse('`invalid_request` — a reason is required.'),
+          401: errorResponse('No valid session.'),
+          403: errorResponse('`forbidden` — administrator access required.'),
+          404: errorResponse('No student with that matriculation number.'),
+          409: errorResponse(
+            '`not_anchored` (the student has never logged in, so no anchor exists) or ' +
+              '`already_revoked`.',
+          ),
         },
       },
     },

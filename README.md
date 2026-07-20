@@ -5,19 +5,29 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 
 **Security challenges addressed:** credential compromise, data adulteration, lateral movement.
 
-> **Status: the Zero Trust engine is live and enforcing, and the evaluation pipeline is built.**
-> Every login and every protected request is risk-scored (device, network, time, session age,
-> request rate, resource sensitivity) and enforced — ALLOW / STEP_UP (TOTP MFA) / DENY /
-> TERMINATE. A background monitor can also end a session with no new request. Every decision is
-> written through a ledger abstraction and mirrored to PostgreSQL with a tamper-detection check
-> that's been proven to actually catch tampering, not just typecheck.
-> The full React portal (Phase 7) is done, and so are the **scripted attack scenarios (Phase 8),
-> the metrics + CES engine (Phase 9), and the chaincode source (Phase 5)** — all built and tested
-> on Windows against the mock ledger. What does **not** exist yet: the real running Hyperledger
-> Fabric network (the engine still runs on an in-memory mock behind the same interface) and the
-> connection to it. That final leg — standing up the network, deploying the chaincode, and wiring
-> `FabricLedger` — is the deliberate "shift to Ubuntu" step, since Fabric needs Linux + Docker.
-> See [Current status](#current-status) for the full breakdown.
+> **Status: all nine roadmap phases are complete and running on a live Hyperledger Fabric 2.5
+> network.** Every login and every protected request is risk-scored against all seven signals the
+> roadmap specifies (device fingerprint, IP, geovelocity, time of day, behaviour rate + navigation
+> sequence, session age, resource sensitivity) and enforced — ALLOW / STEP_UP (TOTP MFA) / DENY /
+> TERMINATE. A background monitor can end a session with no new request. Every decision is written
+> to the blockchain and mirrored to PostgreSQL, with tamper detection proven against real altered
+> records. Six attack scenarios and the metrics + CES engine complete the evaluation.
+>
+> **One item needs the client:** ROADMAP §7 Table 1 gives "Authentication Performance" a 10% weight
+> but never defines it. It is scored against published HCI thresholds and flagged provisional; CES
+> is reported both with and without it. See [Current status](#current-status).
+
+## Quick start
+
+Docker and Node 20+ are the only prerequisites.
+
+```bash
+./scripts/start.sh              # everything: Postgres, migrations, seed, backend, frontend
+./scripts/start.sh --fabric     # ...and the Fabric network + chaincode deployment
+```
+
+Portal at http://localhost:5173 — sign in as `SU/CS/2023/0187` / `demo1234`, or
+`SU/IT/ADMIN/001` / `demo1234` for the Admin/Research view. `./scripts/stop.sh` tears it down.
 
 ## Documents
 
@@ -31,15 +41,15 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 
 | Phase | Status | What actually exists |
 |---|---|---|
-| 1 — Environment setup | ❌ Not started | Node 20+ and PostgreSQL are running. No Ubuntu/WSL2, Docker, or Fabric 2.5 binaries. **This blocks Phases 4–5.** |
-| 2 — Scaffold + ledger interface | ✅ Done | `LedgerService` interface (8 methods), a working hash-chained `MockLedger`, and a `FabricLedger` stub behind the same interface. |
-| 3 — PostgreSQL | ✅ Done | Schema extended with `RiskEvent`, `AuditMirror`, `Device`, `KnownNetwork` for the engine. Seed now produces **30 students** (1 hand-authored + 29 generated) — meets the Phase 8/9 population target early. |
-| 4 — Fabric network | ❌ Not started | Blocked by Phase 1. |
-| 5 — Chaincode | 🟡 Source done, not deployed | `backend/chaincode/` has `IdentityContract` + `AuditContract` (Node.js, `fabric-contract-api`), append-only + hash-chained, with `hashEvent.js` kept byte-identical to the backend's and a 26-check offline test suite (`npm test`). **Not deployed** — chaincode only runs on a live peer, which needs the Phase 4 network. |
-| 6 — Backend + Zero Trust engine | ✅ **Done** | PDP risk engine, PEP middleware on every protected route, TOTP step-up MFA, an on-chain identity-anchor check at login (independent of the password — enables real revocation), a continuous background monitor, and the audit integrity verifier endpoint. All tested live, not just typechecked. |
+| 1 — Environment setup | ✅ Done | WSL2 + Docker + the Fabric 2.5 toolchain. PostgreSQL is now containerised (`docker-compose.yml`), so no local install is required. |
+| 2 — Scaffold + ledger interface | ✅ Done | `LedgerService` interface (8 methods) with two implementations behind it: `FabricLedger` (live) and a hash-chained `MockLedger` for development without a blockchain. |
+| 3 — PostgreSQL | ✅ Done | Schema extended with `RiskEvent`, `AuditMirror`, `Device`, `KnownNetwork` for the engine. Seed produces **30 students** (1 hand-authored + 29 generated) plus 1 administrator. |
+| 4 — Fabric network | ✅ **Done** | 2 orgs (University IT, Registrar), 1 channel, orderer, CA-issued identities. `scripts/fabric-up.sh` starts the network, deploys the chaincode and copies the gateway credentials in one command. |
+| 5 — Chaincode | ✅ **Done** | `backend/chaincode/` — `IdentityContract` + `AuditContract`, append-only and hash-chained, **deployed to both org peers and endorsed by both**. `hashEvent.js` is kept byte-identical to the backend's; 26-check offline suite (`npm test`) plus 22 live ledger checks (`npm run test:fabric`). |
+| 6 — Backend + Zero Trust engine | ✅ **Done** | PDP risk engine implementing **all seven** ROADMAP §4.1 signals (incl. geovelocity and navigation-sequence), PEP middleware on every protected route, TOTP step-up MFA, an on-chain identity-anchor check at login (independent of the password — enables real revocation), a continuous background monitor, the audit integrity verifier, and an admin-only on-chain identity revocation endpoint. All tested live, not just typechecked. |
 | 7 — React portal | ✅ **Done** | Login **with MFA built into the sign-in flow itself** (two-step: password, then TOTP only if the engine flags the device/network — no jarring dialog after the fact), Dashboard, Course Registration, Fee Statement, Results, and the Admin/Research view (audit trail, Verify Integrity button, live metrics). Real per-request client telemetry (locale, timezone, screen, hardware concurrency) collected in the browser and folded into the device-fingerprint signal server-side. All tested live in a browser, not just typechecked. |
-| 8 — Attack scenarios | ✅ **Done** | `backend/simulation/` scripts all five scenarios (genuine login, invalid credentials, credential theft, log tampering, abnormal behaviour), driving the **real backend over HTTP** and emitting labelled outcomes to a JSON report. Run with `npm run sim`. |
-| 9 — Metrics & evaluation | ✅ **Done** | `backend/evaluation/` computes TAR/FAR/FRR, attack resistance %, continuous validation, audit integrity, and the **CES** from Phase 8's labelled report, exporting JSON + CSV + a self-contained HTML chart. Run with `npm run evaluate`. (The Admin view still computes the continuous-validation metrics live from real traffic.) One caveat: the CES "Authentication Performance" component is still undefined in the brief, so it's computed *provisionally* and CES is reported both with and without it. |
+| 8 — Attack scenarios | ✅ **Done** | `backend/simulation/` scripts **six** scenarios — the five the roadmap requires (genuine login, invalid credentials, credential theft, log tampering, abnormal behaviour) plus **lateral movement**, which §1 names as a security challenge but the original five never exercised. All drive the **real backend over HTTP** and emit labelled outcomes to a JSON report. Run with `npm run sim`. |
+| 9 — Metrics & evaluation | ✅ **Done** | `backend/evaluation/` computes TAR/FAR/FRR, attack resistance %, continuous validation, audit integrity, and the **CES** from Phase 8's labelled report, exporting JSON + CSV + a self-contained HTML dashboard, with sample sizes reported alongside every rate (ROADMAP §8). Run with `npm run evaluate`. Deployment packaging is `scripts/start.sh`. One caveat: "Authentication Performance" is undefined in the brief, so it is scored against published HCI thresholds, flagged *provisional*, and CES is reported both with and without it. |
 
 ## Repository structure
 
@@ -51,8 +61,8 @@ and `evaluation` were nested under `backend/` at the client's request. See the d
 backend/
 ├── src/           Express + TypeScript: auth, portal API, Zero Trust engine, ledger client
 ├── prisma/        PostgreSQL schema, migrations, seed
-├── chaincode/     Hyperledger Fabric smart contracts (IdentityContract, AuditContract) [source + tests; deploy on Ubuntu]
-├── simulation/    The 5 scripted attack/usage scenarios  →  labelled report           [built · npm run sim]
+├── chaincode/     Hyperledger Fabric smart contracts (IdentityContract, AuditContract) [deployed · npm test]
+├── simulation/    The 6 scripted attack/usage scenarios  →  labelled report           [built · npm run sim]
 └── evaluation/    Metrics engine: TAR/FAR/FRR, attack resistance, CES  →  JSON/CSV/HTML [built · npm run evaluate]
 frontend/          React + Vite + TypeScript + Tailwind student portal. Talks to the API.
 ```
@@ -75,9 +85,11 @@ through, `STEP_UP` blocks with `403` until a TOTP code is verified (`POST /api/a
 new request — the "no new user action" half of continuous verification.
 
 **Identity anchoring** (`identity.ts`) is a second, independent gate on top of the password: login
-verifies (and anchors, on first use) an identity on the ledger via `LedgerService.verifyIdentity`.
-A revoked anchor blocks login even with the correct password — something bcrypt alone can never
-provide.
+reads the anchor with `LedgerService.getIdentity` (anchoring it on first use) and compares it to a
+hash recomputed from the stored credential. Two failures are reported separately because they mean
+different things — `identity_revoked` (an administrative act) and `identity_mismatch` (the stored
+hash no longer agrees with the anchor, i.e. the database was tampered with). Either blocks login
+even with the correct password, which bcrypt alone can never provide.
 
 Every decision — good or bad — is written through `LedgerService` and mirrored to PostgreSQL
 (`RiskEvent`, `AuditMirror`). The tamper-detection check (`GET /api/admin/audit/verify/:eventId`)
@@ -86,8 +98,10 @@ hash — proven to work by directly editing a database row and watching the chec
 
 ### The Admin / Research view (`frontend/src/pages/Admin.tsx`)
 
-Reachable via **Research View** in the nav, open to any signed-in student (there is no separate
-admin role in the data model — this is a research-transparency view, not a locked-down console).
+Reachable via **Research View** in the nav, and restricted to accounts with `role = ADMIN`
+(`requireAdmin` on the server; `AdminRoute` mirrors it in the UI). Students and staff are disjoint
+— neither is a super-user, and the audit trail names every student, so it is the one resource a
+student must not be able to read about anyone else.
 Shows the access-decision distribution, session/termination stats, mean anomaly detection time
 computed from real data, the full audit trail (searchable by student, newest first), and a
 **Verify Integrity** button per record.
@@ -227,15 +241,16 @@ npm run dev               # http://localhost:5173 (or the next free port)
 ```
 
 **Sign in** with `SU/CS/2023/0187` / `demo1234`. If the engine flags the login (new device/
-network — likely on first use), it'll ask for a TOTP code: fetch the account's secret via
-`GET /api/auth/mfa-secret` while signed in, and either scan it into an authenticator app or
-compute a code with `otplib` directly. This convenience endpoint is prototype-only — see the
-comment on it in `auth.routes.ts`.
+network — likely on first use), it will ask for a TOTP code. First time on an account, the portal
+runs enrollment: it shows a QR code once you supply the **enrollment token** that `npm run db:seed`
+prints for that student. That token stands in for something the registrar hands over in person —
+a correct password deliberately is *not* enough to bind an authenticator, or whoever signs in
+first (including a password thief) would own the second factor.
 
 ## Built: chaincode, simulation, evaluation
 
-All three directories now hold working code (chaincode is written and unit-tested; deployment
-awaits the Ubuntu/Fabric step). Each has its own README with details.
+All three directories hold working code, and the chaincode is deployed to the live network. Each
+has its own README with details.
 
 - **`backend/chaincode/`** (Phase 5) — Node.js chaincode (`fabric-contract-api`). `IdentityContract`
   (`registerIdentity`, `verifyIdentity`, `revokeIdentity`, `getIdentity`) and `AuditContract`
@@ -260,23 +275,30 @@ awaits the Ubuntu/Fabric step). Each has its own README with details.
 
 ## Open items
 
-1. **The live blockchain is the only remaining leg — and it needs Linux.** All Windows-authorable
-   work is done; what's left is the deliberate Ubuntu port: WSL2 + Docker + the Fabric 2.5
-   test-network (Phases 1 + 4), deploying the already-written chaincode onto it, then filling in
-   `FabricLedger.ts` against `@hyperledger/fabric-gateway` and setting `LEDGER=fabric`. Everything
-   above the `LedgerService` interface — the engine, the audit trail, the simulation, the metrics —
-   runs unchanged once that flip happens.
-2. **"Authentication Performance" is still undefined.** It carries 10% of the CES weight but was
-   never specified in the brief. Phase 9 computes it *provisionally* (`1 − meanLoginLatency/budget`,
-   budget 1500 ms) and reports CES both with and without it, so nothing is overstated — but a
-   concrete definition from the client is needed to finalize the single headline CES.
-3. **No admin/role model.** The Admin/Research view is reachable by any signed-in student — there
-   is no staff/researcher account type in the schema. Fine for a research demo; would need a real
-   role system to restrict.
-4. **Phase 8/9 results run against the mock ledger, not Fabric yet.** The scenarios and metrics are
-   complete and produce real numbers, but on `MockLedger`. Because the metric definitions are
-   ledger-agnostic, the identical `npm run sim` / `npm run evaluate` reproduce against the real
-   blockchain once the Ubuntu port lands — no scenario or metric changes needed.
+1. **"Authentication Performance" needs a definition from the client — this is the only open
+   blocker.** ROADMAP §7 Table 1 gives it 10% of the CES weight but, unlike the other three
+   components, never states how to measure it. Phase 9 scores it against published HCI
+   response-time thresholds — full marks at ≤ 3 s (common web-response threshold), zero at ≥ 10 s
+   (Nielsen's *limit of attention*) — and flags it `provisional`, reporting CES both with and
+   without it so nothing is overstated. **Measured login latency on the live blockchain is
+   3 310 ms, which slightly exceeds the 3 000 ms target**, so this component scores 0.956 and the
+   full-weighting CES is **99.6**, not 100. The threshold was set from the literature before the
+   run and has deliberately not been moved to fit the result. This is the concrete number the
+   client's definition should be set against.
+2. **Geolocation is table-driven, not a live GeoIP service.** `zerotrust/geo.ts` resolves the RFC
+   5737 documentation ranges the simulation drives; an IP it cannot place yields *no* signal rather
+   than a guess. ROADMAP §8's ethics constraint rules out third-party lookups, and a fixed table
+   keeps runs reproducible. Production swaps in MaxMind GeoLite2 behind the same `locate()` call.
+3. **Identity revocation is permanent and deliberately manual.** `IdentityContract` has no
+   un-revoke transaction, so `POST /api/admin/identity/:id/revoke` is an explicit administrative
+   act and is *not* wired to the risk engine's TERMINATE decision — a false-positive risk score
+   must never be able to lock a student out of their records irreversibly.
+4. **Phase 8/9 results are measured against the live Fabric network.** The earlier provisional
+   figures were produced on `MockLedger`; the full evaluation has since been re-run on the real
+   blockchain, with no scenario or metric changes needed — the definitions are ledger-agnostic, so
+   the identical `npm run sim` / `npm run evaluate` reproduce on either. Going live also produced
+   two numbers a simulated ledger could not: **~2.1 s and ~8 KB per access decision**, permanently,
+   on every peer. See [TECHNICAL_REPORT.md §9.2](TECHNICAL_REPORT.md#92-measured-cost-of-immutability).
 
 ### Security note
 
