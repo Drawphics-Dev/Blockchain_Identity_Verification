@@ -19,15 +19,26 @@ identity anchoring and an immutable audit trail on a permissioned Hyperledger Fa
 
 ## Quick start
 
-Docker and Node 20+ are the only prerequisites.
+**Docker Desktop (running) and Node 20+ are the only prerequisites.** PostgreSQL is containerised
+for you; nothing else to install.
 
 ```bash
-./scripts/start.sh              # everything: Postgres, migrations, seed, backend, frontend
-./scripts/start.sh --fabric     # ...and the Fabric network + chaincode deployment
+git clone <this-repo> && cd Blockchain_Identity_Verification
+./scripts/start.sh --mock       # everything except the blockchain — ready in about a minute
+```
+
+To run the real Hyperledger Fabric stack you also need `fabric-samples`
+(**inside WSL2 on Windows** — see [Installing Fabric](#installing-fabric-for-the-blockchain-path)):
+
+```bash
+./scripts/start.sh --fabric     # ...plus the Fabric network + chaincode deployment
 ```
 
 Portal at http://localhost:5173 — sign in as `SU/CS/2023/0187` / `demo1234`, or
-`SU/IT/ADMIN/001` / `demo1234` for the Admin/Research view. `./scripts/stop.sh` tears it down.
+`SU/IT/ADMIN/001` / `demo1234` for the Admin/Research view. `Ctrl-C` stops the servers;
+`./scripts/stop.sh` stops the database.
+
+Full setup, tests and troubleshooting: [Running it](#running-it).
 
 ## Documents
 
@@ -162,9 +173,10 @@ so their effect on the metrics can be demonstrated):
 
 **The dependency chain** the whole project rests on: chaincode gives us an unforgeable ledger →
 the backend uses it to make and record Zero Trust decisions → `simulation/` stress-tests those
-decisions → `evaluation/` scores them. The backend, simulation and evaluation ends of that chain
-are now real and tested (against the mock ledger); the chaincode is written and unit-tested but
-not yet deployed. Only the live Fabric-network end (Phases 1 + 4 + wiring `FabricLedger`) remains.
+decisions → `evaluation/` scores them. **Every link is now live and measured**: the chaincode is
+deployed to and endorsed by both peers, the backend runs against it (`LEDGER=fabric`), and the
+published figures come from six scenarios driven over HTTP against that network — 22/22 ledger
+checks, 37/37 end-to-end, 26/26 chaincode.
 
 ## Verifying the engine yourself
 
@@ -212,40 +224,152 @@ npm install && npm test   # 26 checks: append-only, hash-chaining, tamper detect
 
 ## Running it
 
-Prerequisites: **Node 20+** and a running **PostgreSQL 16+** with a database named `blockchain`.
+Everything below assumes a **fresh machine with nothing installed but Docker and Node**. There are
+two paths: run without a blockchain in about a minute, or run the full Fabric stack.
 
-**Backend** — first run:
+### Prerequisites
+
+| | Needed for | Notes |
+|---|---|---|
+| **Docker Desktop** | both paths | Must be *running*, not just installed. On Windows, use the WSL2 backend. |
+| **Node.js 20+** | both paths | `node -v` must report v20 or newer. |
+| **Git Bash** *(Windows only)* | both paths | The scripts are bash. Ships with Git for Windows. |
+| **WSL2 + fabric-samples** | Fabric path only | See [Installing Fabric](#installing-fabric-for-the-blockchain-path) below. |
+
+You do **not** need to install PostgreSQL — it runs in a container the scripts manage.
+
+### Path A — run it now, no blockchain
+
+```bash
+git clone <this-repo>
+cd Blockchain_Identity_Verification
+./scripts/start.sh --mock
+```
+
+That is the whole setup. On first run it installs dependencies, generates `backend/.env` with a
+random JWT secret, starts PostgreSQL in Docker, applies migrations, seeds 30 students + 1
+administrator, and starts both servers.
+
+The Zero Trust engine, the portal, the six attack scenarios and the metrics all work on this path.
+The only difference is that the ledger is `MockLedger` (PostgreSQL-backed, still append-only and
+hash-chained) rather than a real blockchain.
+
+### Path B — the full Hyperledger Fabric stack
+
+```bash
+./scripts/start.sh --fabric
+```
+
+This additionally starts the 2-org Fabric network, deploys both chaincodes, and copies the gateway
+credentials into place. It **reuses** a network that is already running; add `--recreate` to tear
+one down and start a fresh chain (**this destroys the ledger — every identity anchor and audit
+record**).
+
+On Windows, if `fabric-samples` lives inside WSL, the script detects that and hands off to WSL
+automatically. You do not need to do anything special.
+
+### What you get either way
+
+| | |
+|---|---|
+| **Portal** | http://localhost:5173 |
+| **API + Swagger UI** | http://localhost:3000 · http://localhost:3000/docs |
+| **PostgreSQL** | localhost:**55432** (containerised — see note below) |
+| **Student login** | `SU/CS/2023/0187` / `demo1234` |
+| **Admin login** | `SU/IT/ADMIN/001` / `demo1234` |
+
+`Ctrl-C` stops the backend and frontend. `./scripts/stop.sh` stops PostgreSQL
+(`--purge` also deletes its data; `--fabric` also tears down the network).
+
+> **Why port 55432?** Machines that have run this project usually already have PostgreSQL on 5432.
+> On Windows, Docker will happily publish onto the same port rather than refusing to bind, and the
+> host then resolves `localhost:5432` to whichever bound first — so the stack silently connects to
+> the wrong database. Publishing somewhere unoccupied keeps it self-contained. If `backend/.env`
+> already points elsewhere, `start.sh` tells you instead of starting a container nobody uses.
+
+### First sign-in: the QR code
+
+A student's **first** login trips `newDevice` + `newIpAddress` (50 → `STEP_UP`), so the portal runs
+MFA enrollment and shows a QR code — but only after you supply that student's **enrollment token**,
+which `npm run db:seed` prints. A correct password deliberately is *not* enough to bind an
+authenticator, or whoever signs in first (including a password thief) would own the second factor.
+
+Scan it with any authenticator app, enter the 6-digit code, and that device is trusted from then on
+— later logins from the same machine go straight through.
+
+### Installing Fabric (for the blockchain path)
+
+Only needed for Path B. Fabric's tooling is Linux — on Windows install it **inside WSL2**, not on
+the Windows filesystem.
+
+```bash
+# in WSL2 (Ubuntu 22.04) or on Linux, from your home directory:
+curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh
+chmod +x install-fabric.sh
+./install-fabric.sh --fabric-version 2.5.9 docker samples binary
+```
+
+That creates `~/fabric-samples`. The scripts look there by default; point elsewhere with:
+
+```bash
+FABRIC_SAMPLES=/path/to/fabric-samples ./scripts/start.sh --fabric
+```
+
+Verify it worked: `cd backend && npm run test:fabric` should report **22/22 passed** (stop the
+backend first — see below).
+
+### Running the tests
+
+```bash
+cd backend
+npm run typecheck                        # all TypeScript, incl. simulation/evaluation/tests
+npm test --prefix chaincode              # 26 smart-contract checks (offline, no network needed)
+npm run test:e2e                         # 37 end-to-end checks — backend must be RUNNING
+npm run test:fabric                      # 22 ledger checks — backend must be STOPPED (see below)
+npm run sim && npm run evaluate          # the 6 scenarios, then the metrics + CES
+```
+
+Results land in `backend/evaluation/results/` — open **`metrics-latest.html`** for the dashboard.
+
+> **`test:fabric` needs the backend stopped.** It writes to the ledger directly, so a running
+> backend appends to the same chain from a different process. Both contend for the chain's single
+> tail and one fails with `MVCC_READ_CONFLICT`. That is inherent to a hash-chained log, not a
+> defect — and it is the same pressure behind the Merkle-anchoring recommendation. `test:e2e` and
+> `npm run sim` are unaffected: they drive the backend over HTTP, so all writes go through one
+> process.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `Docker is installed but not running` | Start Docker Desktop and wait for it to report ready. |
+| `Fabric test-network not found` | Install fabric-samples (above), or set `FABRIC_SAMPLES`. |
+| `503 ledger_unavailable` | The Fabric peer is unreachable. `docker ps` should list `peer0.org1`, `peer0.org2`, `orderer`. Re-run `./scripts/fabric-up.sh`. |
+| `identity_mismatch` on every login | The database was re-seeded while on Fabric — the on-chain anchors still commit to the old password hashes. See the warning below. |
+| Login refused with `access_denied` | The engine blocked it on risk. The response lists which signals fired. |
+| Port already in use | Something else holds 3000/5173/55432. Stop it, or change `PORT` in `backend/.env`. |
+
+> ⚠️ **Never re-seed while running on Fabric.** `npm run db:seed` regenerates every password hash,
+> but on-chain identity anchors commit to the *old* hashes and cannot be deleted — every student is
+> then locked out permanently with `identity_mismatch`. `scripts/start.sh` refuses to do this
+> silently, but do not run the seed by hand on a Fabric deployment. On `--mock` it is safe.
+
+### Manual setup (if you prefer not to use the scripts)
 
 ```bash
 cd backend
 npm install
-cp .env.example .env      # then set DATABASE_URL and JWT_SECRET
-npm run db:migrate        # create the tables
-npm run db:seed           # load the 30 students, courses, fees, results (prints the hero's TOTP secret)
+cp .env.example .env      # set DATABASE_URL and JWT_SECRET yourself
+npm run db:migrate
+npm run db:seed
 npm run dev               # http://localhost:3000
+
+cd ../frontend && npm install && npm run dev   # http://localhost:5173
 ```
 
-**Interactive API docs: [http://localhost:3000/docs](http://localhost:3000/docs)** (Swagger UI —
-log in, click *Authorize*, and call any endpoint from the browser).
-
-Percent-encode reserved characters in the DB password (`@` → `%40`) or the URL will not parse.
-Useful extras: `npm run db:studio` (browse the data), `npm run db:reset` (wipe + re-seed — this
-also generates fresh TOTP secrets, invalidating any authenticator app entries from before).
-
-**Frontend** — in a second terminal:
-
-```bash
-cd frontend
-npm install
-npm run dev               # http://localhost:5173 (or the next free port)
-```
-
-**Sign in** with `SU/CS/2023/0187` / `demo1234`. If the engine flags the login (new device/
-network — likely on first use), it will ask for a TOTP code. First time on an account, the portal
-runs enrollment: it shows a QR code once you supply the **enrollment token** that `npm run db:seed`
-prints for that student. That token stands in for something the registrar hands over in person —
-a correct password deliberately is *not* enough to bind an authenticator, or whoever signs in
-first (including a password thief) would own the second factor.
+This needs your own PostgreSQL 16+ with a database named `blockchain`. Percent-encode reserved
+characters in the password (`@` → `%40`) or the URL will not parse. Useful extras:
+`npm run db:studio` (browse the data), `npm run db:reset` (wipe + re-seed — mock only).
 
 ## Built: chaincode, simulation, evaluation
 
