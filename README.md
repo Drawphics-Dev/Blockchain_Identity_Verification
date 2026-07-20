@@ -306,7 +306,7 @@ the Windows filesystem.
 # in WSL2 (Ubuntu 22.04) or on Linux, from your home directory:
 curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh
 chmod +x install-fabric.sh
-./install-fabric.sh --fabric-version 2.5.9 docker samples binary
+./install-fabric.sh --fabric-version 2.5.16 --ca-version 1.5.17 docker samples binary
 ```
 
 That creates `~/fabric-samples`. The scripts look there by default; point elsewhere with:
@@ -370,6 +370,153 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 This needs your own PostgreSQL 16+ with a database named `blockchain`. Percent-encode reserved
 characters in the password (`@` → `%40`) or the URL will not parse. Useful extras:
 `npm run db:studio` (browse the data), `npm run db:reset` (wipe + re-seed — mock only).
+
+## Docker configuration
+
+Docker Desktop hosts the Hyperledger Fabric network. Every Fabric component runs as a container,
+so the blockchain never has to be installed onto the host operating system and the same topology
+comes up identically on any machine.
+
+### Verified environment
+
+The versions below are the ones this system was **measured on** — read from the running
+deployment, not from documentation.
+
+| Component | Version |
+|---|---|
+| Operating system | Windows 11 |
+| Linux environment | WSL2 (Ubuntu 22.04 LTS) |
+| Docker Desktop | 29.6.1 (build 8900f1d) |
+| Hyperledger Fabric | 2.5.16 |
+| Hyperledger Fabric CA | 1.5.17 |
+
+### Containers
+
+Eight containers make up the running network:
+
+| Container | Role |
+|---|---|
+| `peer0.org1.example.com` | Org1 (University IT) peer — endorses and commits |
+| `peer0.org2.example.com` | Org2 (Registrar) peer — endorses and commits |
+| `orderer.example.com` | Ordering service — sequences transactions into blocks |
+| `ca_org1`, `ca_org2` | Certificate authorities issuing each org's identities |
+| `ca_orderer` | Certificate authority for the ordering service |
+| `dev-peer0.org1…ziam_1.0` | Chaincode container on Org1 — runs `IdentityContract` + `AuditContract` |
+| `dev-peer0.org2…ziam_1.0` | The same chaincode on Org2 |
+
+Both chaincode containers matter: an endorsement policy requiring **both** organisations is what
+makes a record on this ledger a two-party agreement rather than one server's assertion. A single
+peer could be compromised; two independently endorsing peers is the property the audit trail rests
+on.
+
+The two organisations share **one application channel** (`mychannel`).
+
+### Images
+
+```
+hyperledger/fabric-peer:2.5.16       the peer nodes
+hyperledger/fabric-orderer:2.5.16    the ordering service
+hyperledger/fabric-ca:1.5.17         certificate authorities
+hyperledger/fabric-ccenv:2.5.16      chaincode build environment
+hyperledger/fabric-baseos:2.5.16     base image for chaincode containers
+hyperledger/fabric-nodeenv:2.5       Node.js chaincode runtime
+```
+
+`install-fabric.sh` pulls all of these automatically. Note the last one: `fabric-nodeenv` is
+required **because this project's chaincode is JavaScript** (`fabric-contract-api`). A Go or Java
+chaincode would not need it, and its absence is a common cause of a deployment that packages
+successfully and then fails to start.
+
+Images come from Docker Hub under the plain `hyperledger/` namespace, not `ghcr.io/hyperledger/`.
+
+### Networking
+
+Docker creates an isolated virtual network for the Fabric containers. Traffic within it:
+
+- **peer ↔ peer** — gossip and state transfer between organisations
+- **peer ↔ orderer** — transaction submission and block delivery
+- **peer / orderer ↔ CA** — identity enrolment and TLS certificates
+- **backend ↔ peer** — the Express server via the Fabric Gateway SDK (`@hyperledger/fabric-gateway`)
+
+That last hop is the one that crosses the container boundary. The peer publishes on the host's
+`localhost:7051`, which is why the backend runs **on the host rather than in a container** — from
+inside a container `localhost` is the container itself, and the gateway connection fails. See the
+comments in [docker-compose.yml](docker-compose.yml) for the full reasoning.
+
+TLS adds one subtlety worth knowing: the peer's certificate is issued to
+`peer0.org1.example.com`, not to `localhost`, so the connection needs an SNI override
+(`FABRIC_PEER_HOST_ALIAS`) or the handshake fails even though the connection itself is fine.
+
+### Transaction flow
+
+```
+React frontend
+      │  HTTP + device telemetry
+      ▼
+Express backend  ──►  Zero Trust engine scores the request
+      │
+      ▼  @hyperledger/fabric-gateway
+Peer nodes (Org1 + Org2)  ──►  both endorse
+      │
+      ▼
+Orderer  ──►  sequences into a block
+      │
+      ▼
+Ledger commit  ──►  record is now immutable on every peer
+```
+
+Written to the blockchain: identity registration, identity verification, login decisions, risk
+assessments, access decisions, session terminations, and identity revocations. **Never written:**
+passwords, password hashes, or any student personal data — only hashes and events
+([§5 on-chain vs off-chain](TECHNICAL_REPORT.md#5-data-model-postgresql)).
+
+### Verifying Docker
+
+```bash
+docker --version     # expect 29.x
+docker info          # must succeed — Docker Desktop has to be running, not just installed
+docker ps            # 8 containers once the Fabric network is up
+docker images        # the six Fabric images above
+```
+
+### Starting the network
+
+Use the project script rather than driving `network.sh` by hand — it reuses a running network
+instead of destroying it, deploys the chaincode from the right path, and copies the gateway
+credentials the backend needs:
+
+```bash
+./scripts/fabric-up.sh              # reuse if running, otherwise start; then ensure chaincode
+./scripts/fabric-up.sh --recreate   # tear down first — DESTROYS the ledger
+./scripts/fabric-down.sh            # stop the network
+```
+
+The equivalent by hand, for reference:
+
+```bash
+cd ~/fabric-samples/test-network
+./network.sh up createChannel -c mychannel -ca
+./network.sh deployCC -c mychannel -ccn ziam \
+    -ccp /path/to/repo/backend/chaincode -ccl javascript
+./network.sh down
+```
+
+> A bare `./network.sh deployCC` deploys the *sample* chaincode, not this project's. The
+> `-ccn ziam -ccp <path to backend/chaincode> -ccl javascript` arguments are required, and after
+> every `network.sh up` the gateway credentials must be re-copied — `network.sh` regenerates all
+> crypto material, so the previously copied certificates no longer exist.
+> `scripts/fabric-up.sh` does both steps for you.
+
+### What Docker is responsible for here
+
+- Running the Fabric network: peers, orderer, certificate authorities and chaincode
+- Providing an isolated, reproducible execution environment independent of the host OS
+- Hosting PostgreSQL for a fresh install ([docker-compose.yml](docker-compose.yml))
+
+And what it is **not** responsible for: the Express backend and the React frontend run on the host,
+for the `localhost` reason given above.
+
+---
 
 ## Built: chaincode, simulation, evaluation
 
