@@ -61,7 +61,16 @@ ledger and changes nothing above it — which is the whole point of the ledger a
 
 ## Part 1 — Install the prerequisites
 
-You need exactly two things: **Docker** and **Node.js 20+**.
+The full Fabric stack was validated on **Ubuntu 22.04 LTS** — natively, or inside **WSL2** on
+Windows. You need:
+
+| Prerequisite | Notes |
+|---|---|
+| **Ubuntu 22.04 LTS** | The validated deployment target. On Windows, this lives inside **WSL2**. |
+| **Docker & Docker Compose** | The Compose **v2** plugin (`docker compose`), not the legacy `docker-compose` binary |
+| **Node.js 20+** | Required by both backend and frontend |
+| **Git** | On Windows this also installs **Git Bash**, which the scripts need |
+| **WSL2** | **Windows only** — required because Fabric's `network.sh` is a Linux script |
 
 ### Windows
 
@@ -154,6 +163,26 @@ To avoid it permanently on this machine:
 git config --global core.autocrlf input
 ```
 
+### ⚠️ WSL / Linux users: do not reuse Windows `node_modules`
+
+If you run the stack **inside WSL2 or Ubuntu** (which is where the full Fabric path runs), install
+the dependencies **from inside WSL** — do not reuse a `node_modules` folder that was installed on the
+Windows side. The backend depends on native modules (`bcryptjs`'s crypto path, Prisma's query engine)
+that are compiled per-platform: a `node_modules` built on Windows will fail at runtime under Linux
+with confusing native-binding errors.
+
+If you cloned on Windows and are now running under WSL, delete and reinstall inside WSL:
+
+```bash
+rm -rf backend/node_modules frontend/node_modules
+cd backend  && npm install && cd ..
+cd frontend && npm install && cd ..
+```
+
+`scripts/start.sh` installs dependencies on its first run, so if you run the script entirely inside
+WSL from a clean checkout you never hit this — the problem only appears when a Windows-built
+`node_modules` is carried into WSL.
+
 ---
 
 ## Part 3 — Path A: run it now (no blockchain)
@@ -178,6 +207,21 @@ First run takes about two minutes, mostly npm installs. Later runs take seconds.
 | 6 | Seeds demo data — **only if the database is empty** |
 | 7 | Starts the backend on port 3000, then checks it survived startup |
 | 8 | Starts the frontend on port 5173 |
+
+### The database is the Docker PostgreSQL — do not repoint it
+
+This project runs its **own PostgreSQL in Docker on port 55432**, and `start.sh` writes the matching
+`DATABASE_URL` into `backend/.env` for you. It should read **exactly** this:
+
+```bash
+DATABASE_URL="postgresql://ziam:ziam_dev_password@localhost:55432/blockchain?schema=public"
+```
+
+> **Do not change this to a PostgreSQL you already run locally** (e.g. one you browse in pgAdmin on
+> port 5432). They are two entirely separate databases. If you repoint `.env` at your own database,
+> the app talks to a DB that has **no seeded users**, and every login fails — `start.sh` only ever
+> seeds the Docker database it manages, never one it does not. The two most common symptoms are an
+> empty login (no users) and the classic port mistake, **5432 instead of 55432**.
 
 ### When it's ready
 
@@ -229,11 +273,26 @@ docker images | grep hyperledger      # should list six images
 
 Back in **Git Bash**, in the repo folder:
 
+**First deployment — use `--recreate`:**
+
+```bash
+./scripts/start.sh --fabric --recreate
+```
+
+On a genuine first run there is no ledger to lose, so `--recreate` is safe here and guarantees a
+**clean, synchronized state**: a fresh blockchain and a freshly seeded database whose password hashes
+match the on-chain identity anchors. This is the single most reliable way to avoid the
+`identity_mismatch` error described below.
+
+**Every run after that — use plain `--fabric`:**
+
 ```bash
 ./scripts/start.sh --fabric
 ```
 
-This does everything Path A does, **plus**:
+This **reuses** the existing ledger and does not destroy anything (see [4.3](#43-three-things-to-know)).
+
+Either form does everything Path A does, **plus**:
 
 | Step | What happens |
 |---|---|
@@ -252,14 +311,15 @@ both organisations, and committed.
 It does not destroy the ledger. That is deliberate — restarting your app is routine, wiping a
 blockchain is not.
 
-**`--recreate` destroys everything:**
+**After that first deployment, `--recreate` destroys everything:**
 
 ```bash
 ./scripts/start.sh --fabric --recreate    # tears the network down first
 ```
 
-Every identity anchor and audit record is permanently gone. You must re-seed afterwards or nobody
-can log in.
+Once the ledger holds real data, this permanently wipes every identity anchor and audit record, and
+re-seeds — so it is safe on the *first* run (nothing to lose) but a data-loss command on every run
+after. When in doubt on a running system, use plain `--fabric`.
 
 **Expect it to be slower.** A login takes roughly 3.3 seconds on Fabric versus 0.3 seconds on mock.
 That is not a bug: every write is endorsed by both organisations, ordered, and committed into a
